@@ -23,6 +23,7 @@ import random
 import re
 import shutil
 import socketserver
+import ssl
 import string
 import subprocess
 import sys
@@ -47,6 +48,10 @@ try:
 except Exception:
     CurlCffiSession = None
     _HAS_CURL_CFFI = False
+try:
+    from curl_cffi import CurlOpt
+except Exception:
+    CurlOpt = None
 
 
 _OUTPUT_DIR = os.path.join(_REPO_DIR_BOOT, "output")
@@ -130,6 +135,66 @@ class FreshCheckoutAuthError(RuntimeError):
     pass
 
 
+def _is_https_proxy(proxy_url: str) -> bool:
+    try:
+        return urllib.parse.urlsplit(proxy_url).scheme.lower() == "https"
+    except Exception:
+        return False
+
+
+def _disable_https_proxy_verify(proxy_url: str) -> bool:
+    if not proxy_url or not _is_https_proxy(proxy_url):
+        return False
+    value = os.environ.get("CTF_PROXY_SSL_VERIFY", "").strip().lower()
+    return value not in {"1", "true", "yes", "on"}
+
+
+class _HTTPSProxyInsecureAdapter(requests.adapters.HTTPAdapter):
+    def proxy_manager_for(self, proxy, **proxy_kwargs):
+        if _disable_https_proxy_verify(str(proxy or "")):
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            proxy_kwargs["proxy_ssl_context"] = ctx
+            proxy_kwargs["proxy_assert_hostname"] = False
+        return super().proxy_manager_for(proxy, **proxy_kwargs)
+
+
+def _curl_cffi_proxy_options(proxy_url: str) -> dict:
+    if not _disable_https_proxy_verify(proxy_url) or CurlOpt is None:
+        return {}
+    return {
+        CurlOpt.PROXY_SSL_VERIFYPEER: 0,
+        CurlOpt.PROXY_SSL_VERIFYHOST: 0,
+    }
+
+
+def _new_curl_cffi_session(session_cls, proxy_url: str = "", impersonate: str = "chrome136"):
+    curl_options = _curl_cffi_proxy_options(proxy_url)
+    if curl_options:
+        try:
+            return session_cls(impersonate=impersonate, curl_options=curl_options)
+        except TypeError:
+            session = session_cls(impersonate=impersonate)
+            try:
+                session.curl_options.update(curl_options)
+            except Exception:
+                _log("      [proxy] 当前 curl_cffi 版本不支持 HTTPS 代理证书放宽选项")
+            return session
+    return session_cls(impersonate=impersonate)
+
+
+def _configure_requests_https_proxy_tls(session_obj, proxy_url: str):
+    if not _disable_https_proxy_verify(proxy_url):
+        return
+    mount = getattr(session_obj, "mount", None)
+    if not callable(mount):
+        return
+    adapter = _HTTPSProxyInsecureAdapter()
+    mount("https://", adapter)
+    mount("http://", adapter)
+
+
 def _build_proxy_url_from_cfg(proxy_cfg) -> str:
     if not proxy_cfg:
         return ""
@@ -167,6 +232,7 @@ def _apply_proxy_to_http_session(session_obj, proxy_url: str):
         normalized_proxy = proxy_url
         if _HAS_CURL_CFFI and proxy_url.startswith("socks5://"):
             normalized_proxy = "socks5h://" + proxy_url[len("socks5://"):]
+        _configure_requests_https_proxy_tls(session_obj, normalized_proxy)
         session_obj.proxies = {"http": normalized_proxy, "https": normalized_proxy}
     else:
         session_obj.proxies = {"http": "", "https": ""}
@@ -189,7 +255,7 @@ def _create_chatgpt_http_session(
     proxy_url = _build_proxy_url_from_cfg(_resolve_proxy_cfg(cfg, proxy_cfg_override))
 
     if _HAS_CURL_CFFI:
-        http = CurlCffiSession(impersonate="chrome136")
+        http = _new_curl_cffi_session(CurlCffiSession, proxy_url)
         _apply_proxy_to_http_session(http, proxy_url)
         if user_agent:
             http.headers.update({"user-agent": user_agent})
@@ -5728,7 +5794,7 @@ def _exchange_refresh_token_with_session(email: str, password: str, mail_cfg: di
     _log(f"      [RT] 获得 code，POST /oauth/token 换 refresh_token ...")
     try:
         from curl_cffi.requests import Session as CffiSession
-        http_rt = CffiSession(impersonate="chrome136")
+        http_rt = _new_curl_cffi_session(CffiSession, proxy_url)
         if proxy_url:
             _apply_proxy_to_http_session(http_rt, proxy_url)
         r = http_rt.post(
@@ -7226,7 +7292,7 @@ def _handle_paypal_redirect(
     # ── 创建 HTTP session (curl_cffi Chrome 指纹) ──
     try:
         from curl_cffi.requests import Session as CffiSession
-        http = CffiSession(impersonate="chrome136")
+        http = _new_curl_cffi_session(CffiSession, proxy_url)
         _log("      [PayPal] 使用 curl_cffi (chrome136 TLS 指纹)")
     except ImportError:
         http = requests.Session()

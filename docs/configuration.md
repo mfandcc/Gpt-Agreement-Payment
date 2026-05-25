@@ -133,7 +133,10 @@ cp CTF-reg/config.example.json              CTF-reg/config.noproxy.json
   "max_price": "",
   "phone_prefix": "+",
   "timeout_s": 180,
-  "poll_interval_s": 5
+  "poll_interval_s": 5,
+  "pool_ttl_s": 1500,
+  "pool_max_uses": 3,
+  "pool_path": ""
 }
 ```
 
@@ -146,6 +149,11 @@ cp CTF-reg/config.example.json              CTF-reg/config.noproxy.json
 | `operator` / `max_price` | 可选的运营商和最高价格过滤 |
 | `phone_prefix` | 填进页面前给号码补的前缀，默认 `+` |
 | `timeout_s` / `poll_interval_s` | 等待短信验证码的超时和轮询间隔 |
+| `pool_ttl_s` | SMSBower 号池复用窗口，默认 1500 秒（25 分钟） |
+| `pool_max_uses` | 同一号码最多接码验证次数，默认 3 次 |
+| `pool_path` | 号池 JSON 文件路径；留空默认 `output/sms_bower_pool.json` |
+
+号池只记录和复用 SMSBower activation，不会主动调用完成、取消或删除操作；号码超过复用窗口或接码次数上限后保留历史记录，但后续会重新取号。
 
 ### `paypal` / `cards` / `captcha` / `fresh_checkout` / `runtime`
 

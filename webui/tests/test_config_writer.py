@@ -123,6 +123,9 @@ def test_export_writes_sms_bower_config(client, tmp_path, monkeypatch):
             "phone_prefix": "+",
             "timeout_s": 240,
             "poll_interval_s": 4,
+            "pool_ttl_s": 1500,
+            "pool_max_uses": 3,
+            "pool_path": "",
         },
     }
     r = client.post("/api/config/export", json={"answers": answers})
@@ -134,11 +137,14 @@ def test_export_writes_sms_bower_config(client, tmp_path, monkeypatch):
     assert pay["sms_bower"]["service"] == "dr"
     assert pay["sms_bower"]["country"] == "187"
     assert pay["sms_bower"]["timeout_s"] == 240
+    assert pay["sms_bower"]["pool_ttl_s"] == 1500
+    assert pay["sms_bower"]["pool_max_uses"] == 3
     reg = json.loads((tmp_path / "CTF-reg" / "config.paypal-proxy.json").read_text())
     assert reg["sms_bower"]["enabled"] is True
     assert reg["sms_bower"]["api_key"] == "sb-key"
     assert reg["sms_bower"]["service"] == "dr"
     assert reg["sms_bower"]["country"] == "187"
+    assert reg["sms_bower"]["pool_max_uses"] == 3
 
     spec = importlib.util.spec_from_file_location("ctf_reg_config_sms_bower_test", Path("CTF-reg/config.py"))
     assert spec and spec.loader

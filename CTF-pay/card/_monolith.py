@@ -5511,13 +5511,16 @@ def _exchange_refresh_token_with_session(email: str, password: str, mail_cfg: di
                             from core.sms_bower import SMSBowerClient
 
                             client = SMSBowerClient.from_config(sms_bower_cfg, log=_log)
-                            activation = client.get_number()
+                            activation = client.get_number_from_pool()
                             sms_state["client"] = client
                             sms_state["activation"] = activation
                             masked = activation.number[-4:] if activation.number else "?"
                             _log(
-                                "      [RT-SMS] SMSBower 已分配号码 "
-                                f"id={activation.activation_id} tail={masked}"
+                                "      [RT-SMS] SMSBower 号池号码 "
+                                f"id={activation.activation_id} tail={masked} "
+                                f"used={activation.use_count}/"
+                                f"{getattr(client, 'pool_max_uses', 3)} "
+                                f"reused={activation.reused}"
                             )
                         client = sms_state["client"]
                         activation = sms_state["activation"]
@@ -5536,9 +5539,9 @@ def _exchange_refresh_token_with_session(email: str, password: str, mail_cfg: di
                                 _log("      [RT-SMS] 找不到手机号输入框")
                                 break
                             try:
-                                client.set_status(activation.activation_id, 1)
+                                client.prepare_for_sms(activation)
                             except Exception as e_status:
-                                _log(f"      [RT-SMS] setStatus(1) 失败，继续: {e_status}")
+                                _log(f"      [RT-SMS] 准备接收短信失败，继续: {e_status}")
                             clicked = _click_first_visible(page, [
                                 'button[type="submit"]',
                                 'button:has-text("Continue")',
@@ -5566,7 +5569,11 @@ def _exchange_refresh_token_with_session(email: str, password: str, mail_cfg: di
                                 time.sleep(1)
                                 continue
                             _log("      [RT-SMS] 等待 SMSBower 验证码 ...")
-                            sms_code = client.wait_code(activation.activation_id)
+                            sms_code = client.wait_code(
+                                activation.activation_id,
+                                previous_code=activation.last_code,
+                            )
+                            client.mark_code_received(activation.activation_id, sms_code)
                             _log(f"      [RT-SMS] 验证码已获取 (len={len(sms_code)})")
                             if not _fill_otp_inputs(page, sms_code):
                                 _log("      [RT-SMS] 找不到验证码输入框")
@@ -5580,10 +5587,6 @@ def _exchange_refresh_token_with_session(email: str, password: str, mail_cfg: di
                             ], "      [RT-SMS] 验证码提交: ")
                             sms_state["code_submitted"] = True
                             sms_state["completed"] = True
-                            try:
-                                client.set_status(activation.activation_id, 6)
-                            except Exception as e_status:
-                                _log(f"      [RT-SMS] setStatus(6) 失败，继续: {e_status}")
                             time.sleep(4)
                             continue
                     except Exception as e_sms:
@@ -5705,11 +5708,10 @@ def _exchange_refresh_token_with_session(email: str, password: str, mail_cfg: di
         try:
             client = sms_state.get("client")
             activation = sms_state.get("activation")
-            if client and activation and not sms_state.get("completed"):
-                client.set_status(activation.activation_id, 8)
-                _log(f"      [RT-SMS] 已释放未完成号码 id={activation.activation_id}")
-        except Exception as e_cancel:
-            _log(f"      [RT-SMS] 释放号码失败: {e_cancel}")
+            if client and activation:
+                client.release_pool_lock(activation.activation_id)
+        except Exception as e_release:
+            _log(f"      [RT-SMS] 号池解锁失败: {e_release}")
         try:
             _sh.rmtree(tmp_profile, ignore_errors=True)
         except Exception:

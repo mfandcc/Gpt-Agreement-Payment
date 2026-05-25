@@ -64,6 +64,9 @@ def _project_pay(answers: dict) -> dict:
             "phone_prefix": sb.get("phone_prefix") if sb.get("phone_prefix") is not None else "+",
             "timeout_s": int(sb.get("timeout_s") or 180),
             "poll_interval_s": float(sb.get("poll_interval_s") or 5),
+            "pool_ttl_s": int(sb.get("pool_ttl_s") or 1500),
+            "pool_max_uses": int(sb.get("pool_max_uses") or 3),
+            "pool_path": sb.get("pool_path") or "",
         }
     if pm == "gopay" and "gopay" in answers:
         gp = answers["gopay"] or {}

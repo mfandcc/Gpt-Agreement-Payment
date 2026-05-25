@@ -931,12 +931,15 @@ class AuthFlow:
                     from core.sms_bower import SMSBowerClient
 
                     sms_client = SMSBowerClient.from_config(sms_cfg, log=logger.info)
-                    sms_activation = sms_client.get_number()
+                    sms_activation = sms_client.get_number_from_pool()
                     phone_candidates = [sms_activation.display_number(str(sms_cfg.get("phone_prefix", "+")))]
                     logger.info(
-                        "add-phone SMSBower 分配号码 id=%s tail=%s",
+                        "add-phone SMSBower 号池号码 id=%s tail=%s used=%s/%s reused=%s",
                         sms_activation.activation_id,
                         (sms_activation.number or "")[-4:],
+                        sms_activation.use_count,
+                        sms_client.pool_max_uses,
+                        sms_activation.reused,
                     )
                 except Exception as e:
                     logger.warning("命中 add-phone，但 SMSBower 分配号码失败: %s", e)
@@ -967,18 +970,17 @@ class AuthFlow:
 
                 if sms_client and sms_activation:
                     try:
-                        sms_client.set_status(sms_activation.activation_id, 1)
+                        sms_client.prepare_for_sms(sms_activation)
                     except Exception as e:
-                        logger.warning("SMSBower setStatus(1) 失败，继续等待短信: %s", e)
-                    phone_code = sms_client.wait_code(sms_activation.activation_id)
+                        logger.warning("SMSBower 准备接收短信失败，继续等待短信: %s", e)
+                    phone_code = sms_client.wait_code(
+                        sms_activation.activation_id,
+                        previous_code=sms_activation.last_code,
+                    )
+                    sms_client.mark_code_received(sms_activation.activation_id, phone_code)
                 else:
                     phone_code = self._wait_phone_otp(timeout=otp_timeout)
                 validate_resp = self._phone_otp_validate(phone_code)
-                if sms_client and sms_activation:
-                    try:
-                        sms_client.set_status(sms_activation.activation_id, 6)
-                    except Exception as e:
-                        logger.warning("SMSBower setStatus(6) 失败: %s", e)
                 next_url = self._normalize_continue_url(self._extract_continue_url_from_step(validate_resp))
                 logger.info("add-phone 验证通过，next=%s", (next_url or "")[:180])
                 return next_url or continue_url or ""
@@ -992,9 +994,9 @@ class AuthFlow:
 
         if sms_client and sms_activation:
             try:
-                sms_client.set_status(sms_activation.activation_id, 8)
+                sms_client.release_pool_lock(sms_activation.activation_id)
             except Exception as e:
-                logger.warning("SMSBower setStatus(8) 释放号码失败: %s", e)
+                logger.warning("SMSBower 号池解锁失败: %s", e)
         if last_err:
             logger.warning("add-phone 阶段未成功: %s", last_err)
         return continue_url or ""

@@ -47,9 +47,10 @@ from pipeline._monolith import (  # noqa: F401  (re-export)
     TeamSystemClient,
     # cpa push (webui/backend/routes/inventory.py 调 pipeline._cpa_import_after_team)
     _cpa_import_after_team,
+    _sub2api_import_after_team,
 )
 
 # 散户面板 (cpa_autofill) 推送 — 跟 _cpa_import_after_team 是两个独立目标:
 # 前者推 cli-proxy-api admin 池, 后者推散户卖号面板
 from pipeline.cpa_autofill import upload_accounts as _cpa_autofill_upload  # noqa: F401
-
+from pipeline.sub2api import upload_accounts as _sub2api_upload  # noqa: F401

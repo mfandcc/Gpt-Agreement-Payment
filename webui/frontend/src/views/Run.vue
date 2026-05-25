@@ -698,6 +698,11 @@
               <option value="pushed">已推送</option>
               <option value="not_pushed">未推送</option>
             </select>
+            <select v-model="invFilters.sub2api" class="inv-filter-sel">
+              <option value="">所有 Sub2API</option>
+              <option value="pushed">已推送</option>
+              <option value="not_pushed">未推送</option>
+            </select>
             <span class="inv-filter-count">{{ filteredAccounts.length }} / {{ inventory.accounts.length }}</span>
             <TermBtn variant="ghost" :disabled="!hasActiveFilter" @click="resetInvFilters">清除筛选</TermBtn>
           </div>
@@ -714,6 +719,7 @@
               <TermBtn v-if="rtRefreshableIds.length" variant="ghost" :loading="inventoryBusy" @click="refreshRtStatusAll">RT刷新全部有RT ({{ rtRefreshableIds.length }})</TermBtn>
               <TermBtn v-if="showCpaInventoryActions && unpushedIds.length" variant="ghost" :loading="inventoryBusy" @click="pushAllUnpushed">推送全部未推送→CPA ({{ unpushedIds.length }})</TermBtn>
               <TermBtn v-if="unpushedIds.length" variant="ghost" :loading="inventoryBusy" @click="pushAllUnpushedToAutofill">推送全部未推送→散户面板 ({{ unpushedIds.length }})</TermBtn>
+              <TermBtn v-if="sub2apiUnpushedIds.length" variant="ghost" :loading="inventoryBusy" @click="pushAllUnpushedToSub2Api">推送全部未推送→Sub2API ({{ sub2apiUnpushedIds.length }})</TermBtn>
               <TermBtn v-if="invalidIds.length" variant="ghost" :loading="inventoryBusy" @click="deleteAllInvalid">删除所有失效 ({{ invalidIds.length }})</TermBtn>
             </div>
           </div>
@@ -724,6 +730,7 @@
             <TermBtn variant="ghost" :loading="inventoryBusy" @click="refreshRtStatusSelected">RT刷新</TermBtn>
             <TermBtn v-if="showCpaInventoryActions" variant="ghost" :loading="inventoryBusy" @click="pushSelectedToCpa">推送→CPA</TermBtn>
             <TermBtn variant="ghost" :loading="inventoryBusy" @click="pushSelectedToAutofill">推送→散户面板</TermBtn>
+            <TermBtn variant="ghost" :loading="inventoryBusy" @click="pushSelectedToSub2Api">推送→Sub2API</TermBtn>
             <TermBtn v-if="showPayOnlyInventoryAction" variant="ghost" :loading="inventoryBusy" @click="payOnlySelected">pay-only</TermBtn>
             <TermBtn v-if="showRtInventoryAction" variant="ghost" :loading="inventoryBusy" @click="rtOnlySelected">补 RT</TermBtn>
             <TermBtn variant="ghost" :loading="inventoryBusy" @click="deleteSelected">删除</TermBtn>
@@ -742,12 +749,14 @@
                 <span v-if="showPayInventoryFields" class="badge" :class="payBadgeClass(acc.pay_state)">{{ payStateLabel(acc) }}</span>
                 <span v-if="showRtInventoryFields" class="badge" :class="rtBadgeClass(acc.rt_state)">{{ rtStateLabel(acc) }}</span>
                 <span v-if="showCpaInventoryActions" class="badge" :class="cpaBadgeClass(acc)" :title="acc.cpa_status">{{ cpaLabel(acc) }}</span>
+                <span class="badge" :class="sub2apiBadgeClass(acc)" :title="acc.sub2api_status">{{ sub2apiLabel(acc) }}</span>
                 <!-- 单账号操作按钮组 (右对齐). 跟现有 "推送→CPA" 按钮同一行 -->
                 <div class="inventory-row-actions">
                   <button class="inventory-row-action" :disabled="inventoryBusy" @click="verifyOne(acc.id)">验证</button>
                   <button class="inventory-row-action" :disabled="inventoryBusy" @click="refreshRtStatusOne(acc.id)" :title="acc.has_refresh_token ? '用 RT 换新 AT 拿 JWT plan' : '无 RT, 该按钮会返 no_rt'">RT刷新</button>
                   <button v-if="showCpaInventoryActions && !acc.cpa_pushed" class="inventory-row-action" :disabled="inventoryBusy" @click="pushOneToCpa(acc.id)">推送→CPA</button>
                   <button class="inventory-row-action" :disabled="inventoryBusy" @click="pushOneToAutofill(acc.id)">推送→散户</button>
+                  <button v-if="!acc.sub2api_pushed" class="inventory-row-action" :disabled="inventoryBusy" @click="pushOneToSub2Api(acc.id)">推送→Sub2API</button>
                   <button v-if="showPayOnlyInventoryAction" class="inventory-row-action" :disabled="inventoryBusy" @click="payOnlyOne(acc.id)">pay-only</button>
                   <button v-if="showRtInventoryAction" class="inventory-row-action" :disabled="inventoryBusy" @click="rtOnlyOne(acc.id)">补 RT</button>
                   <button class="inventory-row-action inventory-row-action--danger" :disabled="inventoryBusy" @click="deleteOne(acc.id)">删除</button>
@@ -930,6 +939,8 @@ interface InventoryAccount {
   plan_source: "rt" | "payment" | "derived" | string;
   cpa_status: string;
   cpa_pushed: boolean;
+  sub2api_status: string;
+  sub2api_pushed: boolean;
 }
 
 interface InventoryResponse {
@@ -1810,6 +1821,7 @@ const invFilters = ref({
   pay: "",
   rt: "",
   cpa: "",
+  sub2api: "",
 });
 
 const effectiveInvFilters = computed(() => ({
@@ -1819,6 +1831,7 @@ const effectiveInvFilters = computed(() => ({
   pay: showPayInventoryFields.value ? invFilters.value.pay : "",
   rt: showRtInventoryFields.value ? invFilters.value.rt : "",
   cpa: showCpaInventoryActions.value ? invFilters.value.cpa : "",
+  sub2api: invFilters.value.sub2api,
 }));
 
 const hasActiveFilter = computed(() =>
@@ -1842,12 +1855,16 @@ const filteredAccounts = computed<InventoryAccount[]>(() => {
       if (f.cpa === "pushed" && !acc.cpa_pushed) return false;
       if (f.cpa === "not_pushed" && acc.cpa_pushed) return false;
     }
+    if (f.sub2api) {
+      if (f.sub2api === "pushed" && !acc.sub2api_pushed) return false;
+      if (f.sub2api === "not_pushed" && acc.sub2api_pushed) return false;
+    }
     return true;
   });
 });
 
 function resetInvFilters() {
-  invFilters.value = { search: "", plan: "", check: "", pay: "", rt: "", cpa: "" };
+  invFilters.value = { search: "", plan: "", check: "", pay: "", rt: "", cpa: "", sub2api: "" };
 }
 
 const allFilteredSelected = computed(() => {
@@ -1962,6 +1979,9 @@ function refreshRtStatusOne(id: number) {
 }
 function pushOneToAutofill(id: number) {
   pushCpaAutofill([id], `推送 ${_emailOf(id)} → 散户面板`);
+}
+function pushOneToSub2Api(id: number) {
+  pushSub2Api([id], `推送 ${_emailOf(id)} → Sub2API`);
 }
 async function payOnlyOne(id: number) {
   const email = _emailOf(id);
@@ -2134,8 +2154,21 @@ function cpaBadgeClass(acc: InventoryAccount) {
   if (acc.cpa_status && acc.cpa_status !== "ok") return "badge-err";
   return "badge-ghost";
 }
+function sub2apiLabel(acc: InventoryAccount) {
+  if (acc.sub2api_pushed) return "✓ 已推 Sub2API";
+  if (acc.sub2api_status && acc.sub2api_status !== "ok") return `✗ ${acc.sub2api_status}`;
+  return "○ 未推 Sub2API";
+}
+function sub2apiBadgeClass(acc: InventoryAccount) {
+  if (acc.sub2api_pushed) return "badge-ok";
+  if (acc.sub2api_status && acc.sub2api_status !== "ok") return "badge-err";
+  return "badge-ghost";
+}
 const unpushedIds = computed(() =>
   inventory.value.accounts.filter(a => !a.cpa_pushed).map(a => a.id)
+);
+const sub2apiUnpushedIds = computed(() =>
+  inventory.value.accounts.filter(a => !a.sub2api_pushed).map(a => a.id)
 );
 
 async function pushCpa(ids: number[], label: string) {
@@ -2192,6 +2225,30 @@ async function pushCpaAutofill(ids: number[], label: string) {
 }
 function pushSelectedToAutofill() { pushCpaAutofill(Array.from(selectedIds.value), "批量推送选中到散户面板"); }
 function pushAllUnpushedToAutofill() { pushCpaAutofill(unpushedIds.value, "推送所有未推送到散户面板"); }
+
+async function pushSub2Api(ids: number[], label: string) {
+  if (!ids.length) { message.warning(`没有可${label}的账号`); return; }
+  if (!confirm(`${label}？\n\n将优先用 refresh_token 换新 access_token/id_token 后导入 Sub2API。`)) return;
+  inventoryBusy.value = true;
+  try {
+    const r = await api.post("/inventory/accounts/sub2api-push", { ids, refresh_tokens: true });
+    const s = r.data?.summary || {};
+    const errs = (r.data?.api_errors || []) as string[];
+    const lines = [
+      `${label}完成 (分 ${r.data?.batches ?? 0} 批)`,
+      `accepted=${s.accepted || 0}  rejected=${s.rejected || 0}  missing_field=${s.missing_field || 0}  fail_refresh=${s.fail_refresh || 0}  api_error=${s.api_error || 0}  missing=${s.missing || 0}`,
+    ];
+    if (errs.length) lines.push(`API 错误: ${errs.slice(0, 2).join(" | ")}`);
+    message.success(lines.join("\n"));
+    await refreshInventory();
+  } catch (e: any) {
+    message.error(`${label}失败：${e?.response?.data?.detail || e?.message || e}`);
+  } finally {
+    inventoryBusy.value = false;
+  }
+}
+function pushSelectedToSub2Api() { pushSub2Api(Array.from(selectedIds.value), "批量推送选中到 Sub2API"); }
+function pushAllUnpushedToSub2Api() { pushSub2Api(sub2apiUnpushedIds.value, "推送所有未推送到 Sub2API"); }
 
 function toggleInventoryContent() {
   inventoryExpanded.value = !inventoryExpanded.value;

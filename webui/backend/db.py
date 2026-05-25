@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS pipeline_results (
   domain TEXT DEFAULT '',
   proxy TEXT DEFAULT '',
   cpa_import TEXT DEFAULT '',
+  sub2api_import TEXT DEFAULT '',
   created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pipeline_results_registration_email_id
@@ -219,6 +220,9 @@ class Database:
             c.execute("ALTER TABLE registered_accounts ADD COLUMN last_check_message TEXT DEFAULT ''")
         if "last_plan_type" not in existing_acc:
             c.execute("ALTER TABLE registered_accounts ADD COLUMN last_plan_type TEXT DEFAULT ''")
+        existing_pr = {row["name"] for row in c.execute("PRAGMA table_info(pipeline_results)").fetchall()}
+        if "sub2api_import" not in existing_pr:
+            c.execute("ALTER TABLE pipeline_results ADD COLUMN sub2api_import TEXT DEFAULT ''")
         # 并发跑 no_card_plus 时多 worker 抢占同一 promo_link 的原子化锁字段
         existing_pl = {row["name"] for row in c.execute("PRAGMA table_info(promo_links)").fetchall()}
         if "claimed_by" not in existing_pl:
@@ -714,8 +718,8 @@ class Database:
                   ts, mode, status, error,
                   registration_status, registration_email, registration_error,
                   payment_status, payment_email, payment_error,
-                  domain, proxy, cpa_import, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  domain, proxy, cpa_import, sub2api_import, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     _text(record.get("ts")) or time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -731,6 +735,7 @@ class Database:
                     _text(record.get("domain")),
                     _text(record.get("proxy")),
                     _text(record.get("cpa_import")),
+                    _text(record.get("sub2api_import")),
                     time.time(),
                 ),
             )
@@ -743,7 +748,7 @@ class Database:
                 SELECT ts, mode, status, error,
                        registration_status, registration_email, registration_error,
                        payment_status, payment_email, payment_error,
-                       domain, proxy, cpa_import
+                       domain, proxy, cpa_import, sub2api_import
                 FROM pipeline_results
                 ORDER BY id ASC
                 """
@@ -770,6 +775,8 @@ class Database:
             }
             if row["cpa_import"]:
                 d["cpa_import"] = row["cpa_import"]
+            if row["sub2api_import"]:
+                d["sub2api_import"] = row["sub2api_import"]
             out.append(d)
         return out
 

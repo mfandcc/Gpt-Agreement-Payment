@@ -2,7 +2,7 @@ import json
 import sys
 import types
 
-import pipeline
+import pipeline._monolith as monolith
 from webui.backend.db import get_db
 
 
@@ -49,7 +49,7 @@ def test_pay_only_selects_latest_registered_unpaid_account(tmp_path, monkeypatch
         "payment": {"status": "error", "email": "retry@example.com", "error": "OTP timeout"},
     })
 
-    selected = pipeline._select_recent_registered_account_for_pay_only()
+    selected = monolith._select_recent_registered_account_for_pay_only()
     assert selected is not None
     assert selected["email"] == "retry@example.com"
     assert selected["session_token"] == "sess-retry"
@@ -70,7 +70,7 @@ def test_pay_only_treats_already_paid_error_as_consumed(tmp_path, monkeypatch):
         },
     })
 
-    selected = pipeline._select_recent_registered_account_for_pay_only()
+    selected = monolith._select_recent_registered_account_for_pay_only()
     assert selected is not None
     assert selected["email"] == "older@example.com"
 
@@ -111,10 +111,10 @@ def test_pay_only_success_imports_cpa_with_plus_tag(tmp_path, monkeypatch):
         calls.append((email, sid, cpa_cfg, kwargs))
         return "ok"
 
-    monkeypatch.setattr(pipeline, "pay", fake_pay)
-    monkeypatch.setattr(pipeline, "_cpa_import_after_team", fake_cpa)
+    monkeypatch.setattr(monolith, "pay", fake_pay)
+    monkeypatch.setattr(monolith, "_cpa_import_after_team", fake_cpa)
 
-    result = pipeline.pay_only(str(card_config), use_gopay=True)
+    result = monolith.pay_only(str(card_config), use_gopay=True)
 
     assert result["status"] == "succeeded"
     assert calls
@@ -126,13 +126,63 @@ def test_pay_only_success_imports_cpa_with_plus_tag(tmp_path, monkeypatch):
     assert rows[-1]["cpa_import"] == "ok"
 
 
+def test_pay_only_success_imports_sub2api(tmp_path, monkeypatch):
+    db = _reset_db(tmp_path, monkeypatch)
+    card_config = tmp_path / "config.paypal.json"
+
+    db.add_registered_account({
+        "email": "sub@example.com",
+        "session_token": "sess-sub",
+        "access_token": "at-sub",
+        "device_id": "dev-sub",
+        "refresh_token": "rt-sub",
+    })
+    card_config.write_text(json.dumps({
+        "fresh_checkout": {"plan": {"plan_name": "chatgptplusplan"}},
+        "sub2api": {
+            "enabled": True,
+            "base_url": "https://sub2api.example.com",
+            "admin_api_key": "adm",
+            "oauth_client_id": "app_test",
+        },
+    }), encoding="utf-8")
+
+    calls = []
+
+    def fake_pay(*args, **kwargs):
+        return {
+            "status": "succeeded",
+            "raw": {
+                "session_id": "cs_test",
+                "chatgpt_email": "sub@example.com",
+            },
+        }
+
+    def fake_sub2api(email, sid, cfg, **kwargs):
+        calls.append((email, sid, cfg, kwargs))
+        return "ok"
+
+    monkeypatch.setattr(monolith, "pay", fake_pay)
+    monkeypatch.setattr(monolith, "_sub2api_import_after_team", fake_sub2api)
+
+    result = monolith.pay_only(str(card_config), use_gopay=True)
+
+    assert result["status"] == "succeeded"
+    assert calls
+    assert calls[0][0] == "sub@example.com"
+    assert calls[0][1] == "cs_test"
+    assert calls[0][2]["base_url"] == "https://sub2api.example.com"
+    rows = get_db().iter_pipeline_results()
+    assert rows[-1]["sub2api_import"] == "ok"
+
+
 def test_cpa_import_falls_back_to_access_token_without_refresh_token(tmp_path, monkeypatch):
     db = _reset_db(tmp_path, monkeypatch)
     db.add_registered_account({
         "email": "fallback@example.com",
         "access_token": "eyJhbGciOiJub25lIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF8xMjMifSwiZXhwIjoyNTM0MDk0NDAwfQ.sig",
     })
-    monkeypatch.setattr(pipeline, "_find_latest_refresh_token_for_email", lambda *args, **kwargs: "")
+    monkeypatch.setattr(monolith, "_find_latest_refresh_token_for_email", lambda *args, **kwargs: "")
 
     fake_calls = []
 
@@ -156,7 +206,7 @@ def test_cpa_import_falls_back_to_access_token_without_refresh_token(tmp_path, m
     monkeypatch.setitem(sys.modules, "curl_cffi", fake_pkg)
     monkeypatch.setitem(sys.modules, "curl_cffi.requests", fake_requests)
 
-    status = pipeline._cpa_import_after_team(
+    status = monolith._cpa_import_after_team(
         "fallback@example.com",
         "cs_test",
         {

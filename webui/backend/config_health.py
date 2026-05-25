@@ -455,6 +455,27 @@ def _check_cpa(checks: list[dict], req: dict, pay_cfg: dict) -> None:
         _check(checks, "cpa_config", "ok", "CPA 配置已配置", blocking=False)
 
 
+def _check_sub2api(checks: list[dict], req: dict, pay_cfg: dict) -> None:
+    sub = pay_cfg.get("sub2api") if isinstance(pay_cfg.get("sub2api"), dict) else {}
+    if not sub.get("enabled"):
+        return
+
+    required = ["base_url", "admin_api_key"]
+    missing = [f"sub2api.{p}" for p in required if _is_missing(sub.get(p), allow_example=True)]
+    if missing:
+        _check(
+            checks,
+            "sub2api_config",
+            "warn",
+            "Sub2API 已启用但配置不完整",
+            missing=missing,
+            blocking=False,
+            action="在配置向导 Sub2API 步骤填写 base_url/admin_api_key 后重新导出",
+        )
+    else:
+        _check(checks, "sub2api_config", "ok", "Sub2API 配置已配置", blocking=False)
+
+
 def _check_team_system(checks: list[dict], req: dict, pay_cfg: dict) -> None:
     mode = _text(req.get("mode")) or "single"
     if mode != "daemon":
@@ -520,6 +541,7 @@ def build_config_health(req: dict | None = None) -> dict:
         _check_payment_config(checks, req, pay_cfg)
         _check_pay_only_inventory(checks, req, pay_cfg)
         _check_cpa(checks, req, pay_cfg)
+        _check_sub2api(checks, req, pay_cfg)
         _check_team_system(checks, req, pay_cfg)
         _check_free_backfill_inventory(checks, req)
 

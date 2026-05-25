@@ -159,6 +159,33 @@ def test_export_preserves_cpa_config(client, tmp_path, monkeypatch):
     assert pay["cpa"]["free_plan_tag"] == "free"
 
 
+def test_export_preserves_sub2api_config(client, tmp_path, monkeypatch):
+    _login(client)
+    _seed(tmp_path, monkeypatch)
+
+    answers = {
+        "sub2api": {
+            "enabled": True,
+            "base_url": "https://sub2api.example.com",
+            "admin_api_key": "secret-api-key",
+            "group_ids": "1,2",
+            "concurrency": "4",
+            "priority": "10",
+            "update_existing": True,
+            "oauth_client_id": "app_test_client",
+        },
+    }
+    r = client.post("/api/config/export", json={"answers": answers})
+    assert r.status_code == 200
+
+    pay = json.loads((tmp_path / "CTF-pay" / "config.paypal.json").read_text())
+    assert pay["sub2api"]["enabled"] is True
+    assert pay["sub2api"]["base_url"] == "https://sub2api.example.com"
+    assert pay["sub2api"]["admin_api_key"] == "secret-api-key"
+    assert pay["sub2api"]["group_ids"] == "1,2"
+    assert pay["sub2api"]["update_existing"] is True
+
+
 def test_exported_reg_config_accepts_checkout_link_fields(client, tmp_path, monkeypatch):
     _login(client)
     _seed(tmp_path, monkeypatch)

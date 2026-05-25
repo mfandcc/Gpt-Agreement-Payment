@@ -70,6 +70,7 @@ def test_inventory_summarizes_pay_and_rt_states(client):
         "ts": "2026-05-03T11:00:00+00:00",
         "registration": {"status": "ok", "email": "retry@example.com"},
         "payment": {"status": "error", "email": "retry@example.com", "error": "OTP timeout"},
+        "sub2api_import": "ok",
     })
     db.set_oauth_status(
         "retry@example.com",
@@ -103,6 +104,8 @@ def test_inventory_summarizes_pay_and_rt_states(client):
     by_email = {acc["email"]: acc for acc in body["accounts"]}
     assert by_email["paid@example.com"]["pay_state"] == "consumed"
     assert by_email["retry@example.com"]["pay_state"] == "reusable"
+    assert by_email["retry@example.com"]["sub2api_status"] == "ok"
+    assert by_email["retry@example.com"]["sub2api_pushed"] is True
     assert by_email["retry@example.com"]["rt_state"] == "cooldown"
     assert by_email["retry@example.com"]["can_backfill_rt"] is False
     assert by_email["noauth@example.com"]["pay_state"] == "no_auth"
@@ -142,6 +145,66 @@ def test_delete_hard_deletes_accounts(client):
     assert remaining == ["c@x.com"]
 
 
+def test_sub2api_push_records_status_and_updates_rotated_tokens(client, tmp_path, monkeypatch):
+    _login(client)
+    db = get_db()
+    db.clear_runtime_data()
+    db.add_registered_account({
+        "email": "sub@example.com",
+        "refresh_token": "rt-old",
+        "access_token": "at-old",
+        "id_token": "it-old",
+    })
+    account_id = db.iter_registered_accounts()[0]["id"]
+
+    import webui.backend.settings as s
+    cfg_path = tmp_path / "pay.json"
+    cfg_path.write_text(
+        '{"sub2api":{"enabled":true,"base_url":"https://sub2api.example.com","admin_api_key":"k"}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(s, "PAY_CONFIG_PATH", cfg_path)
+
+    import pipeline
+
+    calls = []
+
+    def fake_upload(accounts, cfg):
+        calls.append((accounts, cfg))
+        accounts[0]["_sub2api_token_update"] = {
+            "access_token": "at-new",
+            "refresh_token": "rt-new",
+            "id_token": "it-new",
+        }
+        return {
+            "results": [{"id": account_id, "email": "sub@example.com", "status": "ok"}],
+            "summary": {
+                "total": 1,
+                "accepted": 1,
+                "rejected": 0,
+                "missing_field": 0,
+                "fail_refresh": 0,
+                "api_error": 0,
+            },
+            "batches": 1,
+            "api_errors": [],
+        }
+
+    monkeypatch.setattr(pipeline, "_sub2api_upload", fake_upload)
+
+    r = client.post("/api/inventory/accounts/sub2api-push", json={"ids": [account_id]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["summary"]["accepted"] == 1
+    assert calls[0][1]["base_url"] == "https://sub2api.example.com"
+
+    updated = db.get_registered_account(account_id)
+    assert updated["access_token"] == "at-new"
+    assert updated["refresh_token"] == "rt-new"
+    assert updated["id_token"] == "it-new"
+    assert db.iter_pipeline_results()[-1]["sub2api_import"] == "ok"
+
+
 def test_check_requires_auth(client):
     r = client.post("/api/inventory/accounts/check", json={"ids": [1]})
     assert r.status_code == 401
@@ -175,7 +238,16 @@ def test_check_persists_results(client, monkeypatch):
     r = client.post("/api/inventory/accounts/check", json={"ids": ids})
     assert r.status_code == 200
     body = r.json()
-    assert body["summary"] == {"total": 3, "valid": 1, "invalid": 1, "unknown": 1}
+    assert body["summary"] == {
+        "total": 3,
+        "valid": 1,
+        "invalid": 1,
+        "unknown": 1,
+        "free": 0,
+        "plus": 0,
+        "team": 0,
+        "pro": 0,
+    }
 
     # results persisted
     by_email = {a["email"]: a for a in db.iter_registered_accounts()}

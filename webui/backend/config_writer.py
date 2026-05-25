@@ -49,6 +49,8 @@ def _project_pay(answers: dict) -> dict:
         out["cpa"] = answers["cpa"]
     if "cpa_autofill" in answers:
         out["cpa_autofill"] = answers["cpa_autofill"]
+    if "sub2api" in answers:
+        out["sub2api"] = answers["sub2api"]
     if pm == "gopay" and "gopay" in answers:
         gp = answers["gopay"] or {}
         if all(gp.get(k) for k in ("country_code", "phone_number", "pin")):

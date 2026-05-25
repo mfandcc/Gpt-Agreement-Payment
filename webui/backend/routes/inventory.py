@@ -1,4 +1,4 @@
-"""Local account inventory: list, validate, delete, push to CPA."""
+"""Local account inventory: list, validate, delete, push to downstreams."""
 from __future__ import annotations
 
 import json
@@ -35,6 +35,11 @@ class RefreshRtStatusRequest(IdsRequest):
 class CpaAutofillPushRequest(IdsRequest):
     """ids 来自前端选中;price 可临时覆盖配置里默认值,不传则用 cpa_autofill.price。"""
     price: float | None = None
+
+
+class Sub2ApiPushRequest(IdsRequest):
+    """ids 来自前端选中;手动推送时默认先用 RT 刷新 Codex token。"""
+    refresh_tokens: bool = True
 
 
 def _load_cpa_cfg() -> dict:
@@ -82,6 +87,47 @@ def _load_cpa_autofill_cfg() -> dict:
     if not (af.get("base_url") and af.get("api_token")):
         raise HTTPException(status_code=400, detail="cpa_autofill 配置缺 base_url 或 api_token")
     return af
+
+
+def _load_sub2api_cfg() -> dict:
+    """读 sub2api 配置,优先 PAY_CONFIG.sub2api;缺字段时 fallback wizard state。"""
+    try:
+        cfg = json.loads(s.PAY_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读 PAY_CONFIG_PATH 失败: {e}")
+    sub = dict(cfg.get("sub2api") or {})
+    if not (sub.get("enabled") and sub.get("base_url") and sub.get("admin_api_key")):
+        try:
+            wiz = get_db().get_runtime_json("wizard_state") or {}
+            wiz_sub = (wiz.get("answers") or {}).get("sub2api") or {}
+            for key in (
+                "enabled",
+                "base_url",
+                "admin_api_key",
+                "group_ids",
+                "concurrency",
+                "priority",
+                "update_existing",
+                "oauth_client_id",
+                "timeout_s",
+                "batch_size",
+            ):
+                if not sub.get(key) and wiz_sub.get(key) not in (None, ""):
+                    sub[key] = wiz_sub[key]
+        except Exception:
+            pass
+    if not sub.get("enabled"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Sub2API 推送未启用。去 wizard Step11 启用并填 base_url + admin_api_key, "
+                "或直接在 PAY_CONFIG.sub2api 加 "
+                '{"enabled": true, "base_url": "...", "admin_api_key": "..."}'
+            ),
+        )
+    if not (sub.get("base_url") and sub.get("admin_api_key")):
+        raise HTTPException(status_code=400, detail="sub2api 配置缺 base_url 或 admin_api_key")
+    return sub
 
 
 def _do_cpa_push(account: dict, cpa_cfg: dict) -> dict:
@@ -266,6 +312,92 @@ def cpa_autofill_push(req: CpaAutofillPushRequest, user: str = CurrentUser):
         "batches": upload_result.get("batches", 0),
         "api_errors": upload_result.get("api_errors", []),
         "price": upload_result.get("price"),
+        "missing_ids": missing_ids,
+    }
+
+
+@router.post("/accounts/sub2api-push")
+def sub2api_push(req: Sub2ApiPushRequest, user: str = CurrentUser):
+    """把选中账号推到 sub2api Admin API。
+
+    默认先用 refresh_token 换新 access_token/id_token,再 POST 到
+    /api/v1/admin/accounts/import/codex-session。
+    """
+    if not req.ids:
+        raise HTTPException(status_code=400, detail="ids 不能为空")
+    if len(req.ids) > 1000:
+        raise HTTPException(status_code=400, detail="单次最多 1000 个")
+    cfg = _load_sub2api_cfg()
+    cfg["refresh_tokens"] = bool(req.refresh_tokens)
+
+    import sys
+    from pathlib import Path
+    repo_root = Path(__file__).resolve().parents[3]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    import pipeline  # type: ignore
+
+    db = get_db()
+    accounts: list[dict] = []
+    missing_ids: list[int] = []
+    for aid in req.ids:
+        acc = db.get_registered_account(int(aid))
+        if not acc:
+            missing_ids.append(int(aid))
+            continue
+        accounts.append({
+            "id": int(aid),
+            "email": acc.get("email", ""),
+            "refresh_token": acc.get("refresh_token", ""),
+            "access_token": acc.get("access_token", ""),
+            "id_token": acc.get("id_token", ""),
+        })
+
+    upload_result = pipeline._sub2api_upload(accounts, cfg)
+
+    # token refresh may rotate the refresh_token; persist it even if upload fails.
+    for acc in accounts:
+        upd = acc.get("_sub2api_token_update") or {}
+        if not upd:
+            continue
+        try:
+            db.update_account_rt_status(
+                int(acc["id"]),
+                status="valid",
+                message="sub2api push token refresh ok",
+                access_token=upd.get("access_token", ""),
+                refresh_token=upd.get("refresh_token", ""),
+                id_token=upd.get("id_token", ""),
+            )
+        except Exception:
+            pass
+
+    try:
+        for r in upload_result.get("results", []):
+            email = r.get("email", "")
+            status_str = str(r.get("status") or "")
+            db.add_pipeline_result({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "mode": "sub2api_push_manual",
+                "status": "ok" if status_str == "ok" else "fail",
+                "registration": {"status": "reused", "email": email},
+                "payment": {"status": "skipped", "email": email},
+                "sub2api_import": status_str if status_str == "ok" else f"sub2api_{status_str}",
+            })
+    except Exception:
+        pass
+
+    summary = dict(upload_result.get("summary", {}))
+    summary["missing"] = len(missing_ids)
+    public_results = []
+    for item in upload_result.get("results", []):
+        clean = {k: v for k, v in item.items() if k != "token_update"}
+        public_results.append(clean)
+    return {
+        "results": public_results,
+        "summary": summary,
+        "batches": upload_result.get("batches", 0),
+        "api_errors": upload_result.get("api_errors", []),
         "missing_ids": missing_ids,
     }
 

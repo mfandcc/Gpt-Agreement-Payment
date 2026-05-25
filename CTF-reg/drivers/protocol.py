@@ -535,6 +535,11 @@ class AuthFlow:
     def _env_flag(name: str, default: str = "0") -> bool:
         return str(os.getenv(name, default)).lower() in ("1", "true", "yes", "on")
 
+    def _add_phone_auto_verify_enabled(self) -> bool:
+        return self._env_flag("OPENAI_ADD_PHONE_AUTO_VERIFY", "0") or self._env_flag(
+            "OAUTH_CODEX_ADD_PHONE_AUTO_VERIFY", "0"
+        )
+
     @staticmethod
     def _b64url_no_pad(raw: bytes) -> str:
         return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
@@ -807,7 +812,7 @@ class AuthFlow:
 
         # add-phone 分支（可选）：
         # 仅在配置了手机号与验证码获取方式时尝试自动推进
-        if self._is_add_phone_state(page_type="", continue_url=continue_url):
+        if self._is_add_phone_state(page_type="", continue_url=continue_url) and self._add_phone_auto_verify_enabled():
             next_url = self._handle_add_phone_verification(continue_url=continue_url)
             if next_url:
                 continue_url = self._normalize_continue_url(next_url)
@@ -1043,6 +1048,9 @@ class AuthFlow:
         """
         if not self._is_add_phone_state(page_type="", continue_url=continue_url):
             return "", continue_url or ""
+        if not self._add_phone_auto_verify_enabled():
+            logger.info("Codex OAuth 命中 add-phone，但未启用 OPENAI_ADD_PHONE_AUTO_VERIFY，跳过自动接码")
+            return "", continue_url or ""
 
         logger.info("Codex OAuth 命中 add-phone，尝试自动接码推进...")
         next_url = self._normalize_continue_url(
@@ -1083,7 +1091,11 @@ class AuthFlow:
                 auth_url, redirect_uri, "codex_authorize"
             )
 
-            if (not callback_url) and self._is_add_phone_state(page_type="", continue_url=final_url or ""):
+            if (
+                (not callback_url)
+                and self._is_add_phone_state(page_type="", continue_url=final_url or "")
+                and self._add_phone_auto_verify_enabled()
+            ):
                 callback_url, final_url = self._codex_handle_add_phone_then_follow(
                     final_url or "",
                     redirect_uri,
@@ -1100,7 +1112,7 @@ class AuthFlow:
                     logger.warning(f"Codex 登录推进失败，改走 no-prompt 兜底: {e}")
                 if continue_url:
                     if self._is_add_phone_state(page_type="", continue_url=continue_url) and self._env_flag(
-                        "OAUTH_CODEX_ADD_PHONE_AUTO_VERIFY", "1"
+                        "OAUTH_CODEX_ADD_PHONE_AUTO_VERIFY", "0"
                     ):
                         callback_url, final_url = self._codex_handle_add_phone_then_follow(
                             continue_url,
@@ -1142,7 +1154,11 @@ class AuthFlow:
                         redirect_uri,
                         "codex_authorize_noprompt",
                     )
-                    if (not callback_url) and self._is_add_phone_state(page_type="", continue_url=final_url or ""):
+                    if (
+                        (not callback_url)
+                        and self._is_add_phone_state(page_type="", continue_url=final_url or "")
+                        and self._add_phone_auto_verify_enabled()
+                    ):
                         callback_url, final_url = self._codex_handle_add_phone_then_follow(
                             final_url or "",
                             redirect_uri,
@@ -2531,7 +2547,10 @@ class AuthFlow:
                         raise
                 continue_url = (otp_resp or {}).get("continue_url", "") if isinstance(otp_resp, dict) else ""
                 continue_url = self._normalize_continue_url(continue_url)
-                if self._is_add_phone_state(page_type=self._extract_page_type(otp_resp), continue_url=continue_url):
+                if (
+                    self._is_add_phone_state(page_type=self._extract_page_type(otp_resp), continue_url=continue_url)
+                    and self._add_phone_auto_verify_enabled()
+                ):
                     continue_url = self._normalize_continue_url(
                         self._handle_add_phone_verification(continue_url=continue_url)
                     )
@@ -2748,7 +2767,10 @@ class AuthFlow:
                     raise
             continue_url = self._extract_continue_url_from_step(otp_resp)
             continue_url = self._normalize_continue_url(continue_url)
-            if self._is_add_phone_state(page_type=self._extract_page_type(otp_resp), continue_url=continue_url):
+            if (
+                self._is_add_phone_state(page_type=self._extract_page_type(otp_resp), continue_url=continue_url)
+                and self._add_phone_auto_verify_enabled()
+            ):
                 continue_url = self._normalize_continue_url(
                     self._handle_add_phone_verification(continue_url=continue_url)
                 )

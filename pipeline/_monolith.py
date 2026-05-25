@@ -1676,6 +1676,131 @@ def rt_only_targets(card_config_path: str, target_emails: list[str]) -> dict:
     return {"results": results, "ok": ok, "skip": skip, "fail": fail}
 
 
+def phone_bind_for_email(card_config_path: str, target_email: str) -> dict:
+    """专用绑手机号模式：对已有账号走 add-phone + SMSBower 号池，再登录 Codex 写回 RT。"""
+    target = _norm_email(target_email)
+    if not target:
+        return {"status": "no_email"}
+
+    account = get_db().find_latest_registered_account(target) or {}
+    if not account:
+        print(f"[phone-bind] ⚠ DB 找不到账号: {target}")
+        return {"status": "no_account", "email": target}
+
+    sys.path.insert(0, str(CARD_DIR))
+    try:
+        from card import (
+            _build_proxy_url_from_cfg,
+            _codex_oauth_client_id_from_config,
+        )
+    except Exception as e:
+        print(f"[phone-bind] import card.py 失败: {e}")
+        return {"status": "import_failed", "error": str(e)[:200], "email": target}
+    finally:
+        try:
+            sys.path.remove(str(CARD_DIR))
+        except ValueError:
+            pass
+
+    try:
+        with open(card_config_path, "r", encoding="utf-8") as f:
+            card_cfg = json.load(f)
+    except Exception as e:
+        return {"status": "read_card_cfg_failed", "error": str(e)[:200], "email": target}
+
+    sms_cfg = card_cfg.get("sms_bower") if isinstance(card_cfg.get("sms_bower"), dict) else {}
+    sms_enabled = str(sms_cfg.get("enabled", "")).strip().lower() in ("1", "true", "yes", "on")
+    if not sms_enabled or not str(sms_cfg.get("api_key") or "").strip():
+        print("[phone-bind] sms_bower 未启用或 api_key 为空，无法专用绑号")
+        return {"status": "no_sms_bower", "email": target}
+
+    mail_cfg = {}
+    reg_cfg_path = ROOT / "CTF-reg" / "config.paypal-proxy.json"
+    if reg_cfg_path.exists():
+        try:
+            with open(reg_cfg_path, "r", encoding="utf-8") as f:
+                mail_cfg = (json.load(f).get("mail") or {})
+        except Exception:
+            mail_cfg = {}
+    if not mail_cfg:
+        print(f"[phone-bind] 缺 mail_cfg（{reg_cfg_path}），无法接收登录 OTP")
+        return {"status": "no_mail_cfg", "email": target}
+
+    max_uses = int(sms_cfg.get("pool_max_uses") or sms_cfg.get("max_verifications_per_number") or 3)
+    print(f"[phone-bind] 启动专用绑号 → email={target} SMSBower 号池 max_uses={max_uses}")
+
+    old_env = {
+        "OPENAI_ADD_PHONE_AUTO_VERIFY": os.environ.get("OPENAI_ADD_PHONE_AUTO_VERIFY"),
+        "OAUTH_CODEX_ADD_PHONE_AUTO_VERIFY": os.environ.get("OAUTH_CODEX_ADD_PHONE_AUTO_VERIFY"),
+        "OAUTH_REFRESH_ONLY": os.environ.get("OAUTH_REFRESH_ONLY"),
+    }
+    os.environ["OPENAI_ADD_PHONE_AUTO_VERIFY"] = "1"
+    os.environ["OAUTH_CODEX_ADD_PHONE_AUTO_VERIFY"] = "1"
+    os.environ.setdefault("OAUTH_REFRESH_ONLY", "1")
+    try:
+        rt = _exchange_refresh_token_dispatch(
+            email=target,
+            password=account.get("password", "") or "",
+            mail_cfg=mail_cfg,
+            proxy_url=_build_proxy_url_from_cfg(card_cfg.get("proxy")),
+            oauth_client_id=_codex_oauth_client_id_from_config(card_cfg),
+            sms_bower_cfg=sms_cfg,
+        )
+    except Exception as e:
+        print(f"[phone-bind] 异常: {type(e).__name__}: {str(e)[:200]}")
+        _set_account_oauth_status(target, "transient_failed", "phone_bind_exception")
+        return {"status": "exception", "error": str(e)[:200], "email": target}
+    finally:
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    if not rt:
+        print(f"[phone-bind] ❌ {target} 未获得 refresh_token")
+        _set_account_oauth_status(target, "transient_failed", "phone_bind_no_rt")
+        return {"status": "no_rt", "email": target}
+
+    try:
+        db = get_db()
+        with db._conn() as c:
+            row = c.execute(
+                "SELECT id FROM registered_accounts WHERE email = ? ORDER BY id DESC LIMIT 1",
+                (target,),
+            ).fetchone()
+            if not row:
+                return {"status": "row_gone", "email": target}
+            row_id = int(row["id"])
+            c.execute("UPDATE registered_accounts SET refresh_token = ? WHERE id = ?", (rt, row_id))
+        _set_account_oauth_status(target, "succeeded")
+        print(f"[phone-bind] ✅ {target} 已绑号并写回 refresh_token (len={len(rt)} id={row_id})")
+        return {"status": "succeeded", "email": target, "refresh_token_len": len(rt), "id": row_id}
+    except Exception as e:
+        print(f"[phone-bind] 拿到 RT 但写库失败: {e}")
+        return {"status": "write_failed", "email": target, "error": str(e)[:200]}
+
+
+def phone_bind_targets(card_config_path: str, target_emails: list[str]) -> dict:
+    """批量专用绑手机号：串行处理选中账号，SMSBower 号池负责同号最多 3 次。"""
+    results = []
+    ok = 0
+    fail = 0
+    for em in target_emails:
+        em = (em or "").strip()
+        if not em:
+            continue
+        r = phone_bind_for_email(card_config_path, em)
+        results.append(r)
+        if r.get("status") == "succeeded":
+            ok += 1
+        else:
+            fail += 1
+        time.sleep(2)
+    print(f"\n[phone-bind] 完成: ok={ok} fail={fail} 共 {len(results)}")
+    return {"results": results, "ok": ok, "fail": fail}
+
+
 def pay_only_targets(card_config_path: str, target_emails: list[str], *,
                      use_paypal=False, use_gopay=False, use_qris=False,
                      gopay_otp_file=None) -> dict:
@@ -4011,14 +4136,18 @@ def main():
     parser.add_argument("--rt-only", action="store_true",
                         help="只对 --target-emails 跑 RT 交换：用现有 password/session "
                              "走 Codex OAuth 拿 refresh_token 写回 DB（不付款）")
+    parser.add_argument("--phone-bind", action="store_true",
+                        help="专用绑手机号模式：对 --target-emails 里的已注册账号走 SMSBower add-phone，"
+                             "然后登录 Codex 拿 refresh_token 写回 DB")
     args = parser.parse_args()
 
     pay_flags = sum(1 for x in (args.paypal, args.gopay, args.qris) if x)
     if pay_flags > 1:
         print("[ERROR] --paypal / --gopay / --qris 互斥，只能用一种", file=sys.stderr)
         sys.exit(2)
-    if args.free_register and args.free_backfill_rt:
-        print("[ERROR] --free-register 与 --free-backfill-rt 互斥", file=sys.stderr)
+    exclusive_modes = sum(1 for x in (args.free_register, args.free_backfill_rt, args.phone_bind) if x)
+    if exclusive_modes > 1:
+        print("[ERROR] --free-register / --free-backfill-rt / --phone-bind 互斥", file=sys.stderr)
         sys.exit(2)
 
     # --plan 在所有分支前生效：生成临时 config，后续所有 register/pay/daemon/
@@ -4072,6 +4201,14 @@ def main():
                 sys.exit(2)
             r = rt_only_targets(args.config, target_emails_list)
             print(f"\n结果: ok={r['ok']} skip={r['skip']} fail={r['fail']}")
+            return
+
+        if args.phone_bind:
+            if not target_emails_list:
+                print("[ERROR] --phone-bind 必须配合 --target-emails 使用", file=sys.stderr)
+                sys.exit(2)
+            r = phone_bind_targets(args.config, target_emails_list)
+            print(f"\n结果: ok={r['ok']} fail={r['fail']}")
             return
 
         if args.pay_only and target_emails_list:

@@ -5286,6 +5286,14 @@ def _sms_bower_enabled(cfg: dict | None) -> bool:
     return enabled in ("1", "true", "yes", "on") and bool(str(cfg.get("api_key") or "").strip())
 
 
+def _add_phone_auto_verify_enabled() -> bool:
+    return str(os.environ.get("OPENAI_ADD_PHONE_AUTO_VERIFY", "0")).strip().lower() in (
+        "1", "true", "yes", "on"
+    ) or str(os.environ.get("OAUTH_CODEX_ADD_PHONE_AUTO_VERIFY", "0")).strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
 def _click_first_visible(page, selectors: list[str], log_prefix: str = "") -> bool:
     for sel in selectors:
         try:
@@ -5555,7 +5563,7 @@ def _exchange_refresh_token_with_session(email: str, password: str, mail_cfg: di
                         except Exception:
                             pass
                     skipped = False
-                    if not sms_state["phone_submitted"]:
+                    if not sms_state["phone_submitted"] and not _add_phone_auto_verify_enabled():
                         skipped = _click_first_visible(page, [
                             'a:has-text("Skip")', 'button:has-text("Skip")',
                             'a:has-text("Not now")', 'button:has-text("Not now")',
@@ -5567,10 +5575,10 @@ def _exchange_refresh_token_with_session(email: str, password: str, mail_cfg: di
                         if skipped:
                             time.sleep(2)
                             continue
-                    if not skipped and not _sms_bower_enabled(sms_bower_cfg):
+                    if not skipped and (not _add_phone_auto_verify_enabled() or not _sms_bower_enabled(sms_bower_cfg)):
                         if not getattr(page, "_addphone_gaveup", False):
                             page._addphone_gaveup = True
-                            _log("      [RT] add-phone 无 Skip 且 sms_bower 未启用，提前放弃")
+                            _log("      [RT] add-phone 无 Skip 且未启用专用绑号模式/SMSBower，提前放弃")
                         break
                     try:
                         if not sms_state["activation"]:

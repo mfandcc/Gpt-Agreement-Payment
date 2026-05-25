@@ -49,6 +49,24 @@ def test_run_preview_daemon(client):
     assert "--daemon" in body["cmd_str"]
 
 
+def test_run_preview_phone_bind(client):
+    _login(client)
+    r = client.post("/api/run/preview", json={"mode": "phone_bind", "target_emails": ["a@example.org"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert "--phone-bind" in body["cmd_str"]
+    assert "--target-emails" in body["cmd_str"]
+    assert "a@example.org" in body["cmd_str"]
+    assert "pipeline.py" in body["cmd_str"]
+
+
+def test_run_start_phone_bind_requires_target(client):
+    _login(client)
+    r = client.post("/api/run/start", json={"mode": "phone_bind"})
+    assert r.status_code == 400
+    assert "phone_bind" in r.json()["detail"]
+
+
 def test_run_invalid_mode(client):
     _login(client)
     r = client.post("/api/run/preview", json={"mode": "bogus"})

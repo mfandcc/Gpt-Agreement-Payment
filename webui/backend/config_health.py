@@ -131,7 +131,7 @@ def _requires_registration(req: dict) -> bool:
     mode = _text(req.get("mode")) or "single"
     if mode == "free_register":
         return True
-    if mode == "free_backfill_rt":
+    if mode in {"free_backfill_rt", "phone_bind"}:
         return False
     return not bool(req.get("pay_only"))
 
@@ -140,12 +140,12 @@ def _requires_email_otp(req: dict) -> bool:
     mode = _text(req.get("mode")) or "single"
     # free_backfill_rt does not create a new mailbox, but OAuth login still
     # needs the OpenAI email OTP provider for existing accounts.
-    return _requires_registration(req) or mode == "free_backfill_rt" or bool(req.get("register_only"))
+    return _requires_registration(req) or mode in {"free_backfill_rt", "phone_bind"} or bool(req.get("register_only"))
 
 
 def _payment_kind(req: dict) -> str:
     mode = _text(req.get("mode")) or "single"
-    if mode in {"free_register", "free_backfill_rt", "promo_link"} or bool(req.get("register_only")):
+    if mode in {"free_register", "free_backfill_rt", "phone_bind", "promo_link"} or bool(req.get("register_only")):
         return "none"
     if bool(req.get("qris")):
         return "qris"
@@ -228,7 +228,7 @@ def _check_cloudflare_kv(checks: list[dict], req: dict) -> None:
         )
         return
 
-    if _requires_email_otp(req):
+    if _requires_email_otp(req) and _text(req.get("mode")) != "phone_bind":
         _check(
             checks,
             "cloudflare_kv_secrets",
@@ -242,7 +242,7 @@ def _check_cloudflare_kv(checks: list[dict], req: dict) -> None:
             checks,
             "cloudflare_kv_secrets",
             "warn",
-            "Cloudflare KV OTP 凭证缺失；pay-only 支付可继续，但后续补 RT/CPA 可能失败",
+            "Cloudflare KV OTP 凭证缺失；当前模式可继续，但 catch-all 邮箱登录 OTP 可能失败",
             missing=missing,
             blocking=False,
             action="如果需要自动拿 refresh_token，请先补齐 Cloudflare KV 凭证",
@@ -528,6 +528,44 @@ def _check_free_backfill_inventory(checks: list[dict], req: dict) -> None:
         _check(checks, "backfill_inventory", "ok", f"RT 待补/可重试账号 {candidates} 个", blocking=False)
 
 
+def _check_phone_bind(checks: list[dict], req: dict, pay_cfg: dict) -> None:
+    if _text(req.get("mode")) != "phone_bind":
+        return
+    target_emails = req.get("target_emails") if isinstance(req.get("target_emails"), list) else []
+    clean_targets = [str(x).strip().lower() for x in target_emails if str(x or "").strip()]
+    if not clean_targets:
+        _check(
+            checks,
+            "phone_bind_targets",
+            "fail",
+            "phone_bind 需要先在账号库存里选择目标账号",
+            missing=["target_emails"],
+            action="展开账号库存，勾选要绑定手机号的账号，再点“绑手机号”",
+        )
+    else:
+        _check(checks, "phone_bind_targets", "ok", f"已选择 {len(clean_targets)} 个目标账号", blocking=False)
+
+    sms = pay_cfg.get("sms_bower") if isinstance(pay_cfg.get("sms_bower"), dict) else {}
+    enabled = str(sms.get("enabled", "")).strip().lower() in ("1", "true", "yes", "on")
+    missing = []
+    if not enabled:
+        missing.append("sms_bower.enabled")
+    if _is_missing(sms.get("api_key"), allow_example=True):
+        missing.append("sms_bower.api_key")
+    if missing:
+        _check(
+            checks,
+            "sms_bower",
+            "fail",
+            "专用绑手机号模式需要 SMSBower 号池配置",
+            missing=missing,
+            action="在配置向导 SMSBower 步骤启用并填写 API Key 后重新导出",
+        )
+    else:
+        max_uses = sms.get("pool_max_uses") or sms.get("max_verifications_per_number") or 3
+        _check(checks, "sms_bower", "ok", f"SMSBower 已配置；单号最多复用 {max_uses} 次", blocking=False)
+
+
 def build_config_health(req: dict | None = None) -> dict:
     req = dict(req or {})
     req.setdefault("mode", "single")
@@ -544,6 +582,7 @@ def build_config_health(req: dict | None = None) -> dict:
         _check_sub2api(checks, req, pay_cfg)
         _check_team_system(checks, req, pay_cfg)
         _check_free_backfill_inventory(checks, req)
+        _check_phone_bind(checks, req, pay_cfg)
 
     blocking = [c for c in checks if c.get("blocking") and c.get("status") == "fail"]
     return {

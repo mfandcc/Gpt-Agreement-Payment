@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/run", tags=["run"])
 
 
 class StartRequest(BaseModel):
-    mode: str = Field(pattern="^(single|batch|self_dealer|daemon|free_register|free_backfill_rt|promo_link|no_card_plus)$")
+    mode: str = Field(pattern="^(single|batch|self_dealer|daemon|free_register|free_backfill_rt|phone_bind|promo_link|no_card_plus)$")
     paypal: bool = True
     batch: int = 0
     workers: int = 3
@@ -73,6 +73,8 @@ def start(req: StartRequest, user: str = CurrentUser):
         raise HTTPException(status_code=400, detail="batch 模式下批次数必须 ≥ 1")
     if req.mode == "self_dealer" and req.self_dealer < 1:
         raise HTTPException(status_code=400, detail="self_dealer 模式下成员数必须 ≥ 1")
+    if req.mode == "phone_bind" and not req.target_emails:
+        raise HTTPException(status_code=400, detail="phone_bind 模式必须选择至少 1 个库存账号")
     if req.mode == "no_card_plus_parallel":
         raise HTTPException(
             status_code=400,
@@ -156,6 +158,8 @@ def preview(req: StartRequest, user: str = CurrentUser):
         promo_country=req.promo_country,
         promo_currency=req.promo_currency,
         promo_campaign_id=req.promo_campaign_id,
+        target_emails=req.target_emails,
+        rt_only=req.rt_only,
     )
     return {"cmd": cmd, "cmd_str": " ".join(cmd)}
 

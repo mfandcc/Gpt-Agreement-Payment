@@ -382,6 +382,9 @@
           <p v-else-if="isFreeBackfillMode" class="ctl-hint">
             <code>free_backfill_rt</code> 只处理库存老号补 <code>refresh_token</code>，不需要新邮箱或支付方式。
           </p>
+          <p v-else-if="isPhoneBindMode" class="ctl-hint">
+            <code>phone_bind</code> 只处理库存选中账号：走 SMSBower add-phone 号池绑定手机号，再登录 Codex 拿 <code>refresh_token</code> 写回 DB。号池规则沿用配置：默认 1 个手机号最多绑定 3 个账号。
+          </p>
         </div>
 
         <div v-if="form.mode !== 'no_card_plus_parallel'" class="term-divider" data-tail="──────────">命令</div>
@@ -733,6 +736,7 @@
             <TermBtn variant="ghost" :loading="inventoryBusy" @click="pushSelectedToSub2Api">推送→Sub2API</TermBtn>
             <TermBtn v-if="showPayOnlyInventoryAction" variant="ghost" :loading="inventoryBusy" @click="payOnlySelected">pay-only</TermBtn>
             <TermBtn v-if="showRtInventoryAction" variant="ghost" :loading="inventoryBusy" @click="rtOnlySelected">补 RT</TermBtn>
+            <TermBtn v-if="showPhoneBindInventoryAction" variant="ghost" :loading="inventoryBusy || starting" @click="phoneBindSelected">绑手机号</TermBtn>
             <TermBtn variant="ghost" :loading="inventoryBusy" @click="deleteSelected">删除</TermBtn>
           </div>
 
@@ -759,6 +763,7 @@
                   <button v-if="!acc.sub2api_pushed" class="inventory-row-action" :disabled="inventoryBusy" @click="pushOneToSub2Api(acc.id)">推送→Sub2API</button>
                   <button v-if="showPayOnlyInventoryAction" class="inventory-row-action" :disabled="inventoryBusy" @click="payOnlyOne(acc.id)">pay-only</button>
                   <button v-if="showRtInventoryAction" class="inventory-row-action" :disabled="inventoryBusy" @click="rtOnlyOne(acc.id)">补 RT</button>
+                  <button v-if="showPhoneBindInventoryAction" class="inventory-row-action" :disabled="inventoryBusy || starting" @click="phoneBindOne(acc.id)">绑手机号</button>
                   <button class="inventory-row-action inventory-row-action--danger" :disabled="inventoryBusy" @click="deleteOne(acc.id)">删除</button>
                 </div>
               </div>
@@ -861,6 +866,7 @@ const modes = [
   { value: "daemon", label: "daemon ∞" },
   { value: "free_register", label: "free_register — 免费号+rt+CPA" },
   { value: "free_backfill_rt", label: "free_backfill_rt — 老号补rt" },
+  { value: "phone_bind", label: "phone_bind — 选老号绑手机号+rt" },
   { value: "promo_link", label: "promo_link — 抓优惠长链接存DB" },
   { value: "no_card_plus", label: "no_card_plus — promo+PayPal RPA 0 元开 Plus" },
   { value: "no_card_plus_parallel", label: "no_card_plus 并发 — N worker 各自 phone+sms" },
@@ -1617,12 +1623,13 @@ const inventoryExpanded = ref(false);
 
 const isFreeRegisterMode = computed(() => form.value.mode === "free_register");
 const isFreeBackfillMode = computed(() => form.value.mode === "free_backfill_rt");
+const isPhoneBindMode = computed(() => form.value.mode === "phone_bind");
 const isNoCardPlusMode = computed(() => form.value.mode === "no_card_plus");
 const modeSupportsPayment = computed(() => paymentModes.has(form.value.mode));
 const showRunModifiers = computed(() => modeSupportsPayment.value);
 const showPaymentSelector = computed(() => modeSupportsPayment.value && !form.value.register_only);
 // no_card_plus 走 promo_link 已注册账号 + PayPal RPA, 不涉及 ChatGPT 注册环节
-const requiresRegistration = computed(() => !form.value.pay_only && !isFreeBackfillMode.value && !isNoCardPlusMode.value);
+const requiresRegistration = computed(() => !form.value.pay_only && !isFreeBackfillMode.value && !isPhoneBindMode.value && !isNoCardPlusMode.value);
 const showRegisterPath = computed(() => requiresRegistration.value);
 const showMailSource = computed(() => requiresRegistration.value);
 const showOutlookSelector = computed(() => showMailSource.value && form.value.mail_source === "outlook");
@@ -1638,17 +1645,20 @@ const showGopayLinkTools = computed(() =>
   form.value.gopay || autoLoop.value.running
 );
 const inventoryAutoRelevant = computed(() =>
-  form.value.pay_only || isFreeRegisterMode.value || isFreeBackfillMode.value
+  form.value.pay_only || isFreeRegisterMode.value || isFreeBackfillMode.value || isPhoneBindMode.value
 );
 const showInventoryContent = computed(() => inventoryExpanded.value);
 const showPayInventoryFields = computed(() => modeSupportsPayment.value || form.value.pay_only);
-const showRtInventoryFields = computed(() => isFreeRegisterMode.value || isFreeBackfillMode.value);
+const showRtInventoryFields = computed(() => isFreeRegisterMode.value || isFreeBackfillMode.value || isPhoneBindMode.value);
 const showCpaInventoryActions = computed(() => isFreeRegisterMode.value || isFreeBackfillMode.value);
 const showPayOnlyInventoryAction = computed(() =>
   showPayInventoryFields.value && !form.value.register_only && !status.value.running
 );
 const showRtInventoryAction = computed(() =>
-  showRtInventoryFields.value && !status.value.running
+  showRtInventoryFields.value && !isPhoneBindMode.value && !status.value.running
+);
+const showPhoneBindInventoryAction = computed(() =>
+  isPhoneBindMode.value && !status.value.running
 );
 const hasSelection = computed(() => selectedIds.value.size > 0);
 
@@ -2032,6 +2042,30 @@ async function rtOnlyOne(id: number) {
     starting.value = false;
   }
 }
+async function phoneBindOne(id: number) {
+  const email = _emailOf(id);
+  if (!email || email.startsWith("id=")) { message.warning("找不到该账号 email"); return; }
+  if (!confirm(`对 ${email} 走专用绑手机号？\n\n将使用 SMSBower 号池 add-phone；默认同一手机号最多绑定 3 个账号。成功后会登录 Codex 拿 refresh_token 写回 DB。`)) return;
+  starting.value = true;
+  try {
+    await api.post("/run/start", {
+      mode: "phone_bind",
+      paypal: false,
+      gopay: false,
+      pay_only: false,
+      register_only: false,
+      register_mode: form.value.register_mode,
+      target_emails: [email],
+    });
+    message.success(`已对 ${email} 启动绑手机号`);
+    await refreshStatus();
+    if (status.value.running) openStream();
+  } catch (e: any) {
+    message.error(e?.response?.data?.detail?.message || e?.response?.data?.detail || "启动失败");
+  } finally {
+    starting.value = false;
+  }
+}
 function deleteOne(id: number) {
   confirmAndDelete([id], `删除 ${_emailOf(id)}`);
 }
@@ -2119,6 +2153,32 @@ async function rtOnlySelected() {
     if (status.value.running) openStream();
   } catch (e: any) {
     message.error(e?.response?.data?.detail || "启动失败");
+  } finally {
+    starting.value = false;
+  }
+}
+
+async function phoneBindSelected() {
+  const emails = _selectedEmails();
+  if (!emails.length) { message.warning("没有选中账号"); return; }
+  const preview = emails.slice(0, 3).join(", ") + (emails.length > 3 ? `... 共 ${emails.length}` : "");
+  if (!confirm(`对 ${emails.length} 个选中账号走专用绑手机号？\n${preview}\n\n将使用 SMSBower 号池 add-phone；默认同一手机号最多绑定 3 个账号。成功后会登录 Codex 拿 refresh_token 写回 DB。`)) return;
+  starting.value = true;
+  try {
+    await api.post("/run/start", {
+      mode: "phone_bind",
+      paypal: false,
+      gopay: false,
+      pay_only: false,
+      register_only: false,
+      register_mode: form.value.register_mode,
+      target_emails: emails,
+    });
+    message.success(`已对 ${emails.length} 个账号启动绑手机号`);
+    await refreshStatus();
+    if (status.value.running) openStream();
+  } catch (e: any) {
+    message.error(e?.response?.data?.detail?.message || e?.response?.data?.detail || "启动失败");
   } finally {
     starting.value = false;
   }
@@ -2292,7 +2352,9 @@ async function checkConfigHealth() {
   if (configHealthLoading.value) return configHealth.value;
   configHealthLoading.value = true;
   try {
-    const r = await api.post<ConfigHealthResponse>("/config/health", form.value);
+    const payload: any = { ...form.value };
+    if (isPhoneBindMode.value) payload.target_emails = _selectedEmails();
+    const r = await api.post<ConfigHealthResponse>("/config/health", payload);
     configHealth.value = r.data;
     return r.data;
   } catch (e: any) {
@@ -2306,13 +2368,21 @@ async function checkConfigHealth() {
 async function start() {
   starting.value = true;
   try {
+    const payload: any = { ...form.value };
+    if (isPhoneBindMode.value) {
+      payload.target_emails = _selectedEmails();
+      if (!payload.target_emails.length) {
+        message.error("phone_bind 需要先在账号库存里勾选目标账号");
+        return;
+      }
+    }
     const health = await checkConfigHealth();
     if (!health?.ok) {
       const first = health?.blocking?.[0];
       message.error(first?.message || "配置健康检查未通过，已阻止启动");
       return;
     }
-    await api.post("/run/start", form.value);
+    await api.post("/run/start", payload);
     message.success("已启动");
     lines.value = [];
     await refreshStatus();

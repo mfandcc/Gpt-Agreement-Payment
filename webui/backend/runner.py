@@ -144,6 +144,13 @@ def build_cmd(mode: str, paypal: bool, batch: int, workers: int, self_dealer: in
 
     cmd = ["xvfb-run", "-a", "python", "-u", "pipeline.py",
            "--config", str(s.PAY_CONFIG_PATH)]
+    if mode == "phone_bind":
+        cmd.append("--phone-bind")
+        if target_emails:
+            joined = ",".join(e.strip() for e in target_emails if e and e.strip())
+            if joined:
+                cmd.extend(["--target-emails", joined])
+        return cmd
     # free_only 两个子模式 + promo_link 都不走 paypal / gopay / qris 支付段
     if mode in ("free_register", "free_backfill_rt"):
         if mode == "free_register":
@@ -328,6 +335,9 @@ def start(*, mode: str, paypal: bool = True, batch: int = 0, workers: int = 3,
             print(f"[runner] register_mode={rm!r} 不识别，回退 protocol")
             rm = "protocol"
         env["WEBUI_REG_MODE"] = rm
+        if mode == "phone_bind":
+            env["OPENAI_ADD_PHONE_AUTO_VERIFY"] = "1"
+            env["OAUTH_CODEX_ADD_PHONE_AUTO_VERIFY"] = "1"
         env.setdefault("OPENAI_SENTINEL_REQUIRE_QUICKJS", "1")
         # 邮箱来源 (二选一 strict) → CTF-reg/mail/provider.py:create_mailbox() 读
         src = (mail_source or "outlook").strip().lower()

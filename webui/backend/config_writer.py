@@ -51,6 +51,20 @@ def _project_pay(answers: dict) -> dict:
         out["cpa_autofill"] = answers["cpa_autofill"]
     if "sub2api" in answers:
         out["sub2api"] = answers["sub2api"]
+    if "sms_bower" in answers:
+        sb = answers["sms_bower"] or {}
+        out["sms_bower"] = {
+            "enabled": bool(sb.get("enabled", False)),
+            "api_key": sb.get("api_key", ""),
+            "api_url": sb.get("api_url") or "https://smsbower.online/stubs/handler_api.php",
+            "service": sb.get("service") or "dr",
+            "country": str(sb.get("country") or "0"),
+            "operator": sb.get("operator") or "",
+            "max_price": sb.get("max_price") or "",
+            "phone_prefix": sb.get("phone_prefix") if sb.get("phone_prefix") is not None else "+",
+            "timeout_s": int(sb.get("timeout_s") or 180),
+            "poll_interval_s": float(sb.get("poll_interval_s") or 5),
+        }
     if pm == "gopay" and "gopay" in answers:
         gp = answers["gopay"] or {}
         if all(gp.get(k) for k in ("country_code", "phone_number", "pin")):
@@ -139,6 +153,8 @@ def _project_reg(answers: dict) -> dict:
         out["team_plan"] = answers["team_plan"]
     if "captcha" in answers:
         out["captcha"] = {"client_key": answers["captcha"].get("client_key") or answers["captcha"].get("api_key", "")}
+    if "sms_bower" in answers:
+        out["sms_bower"] = _project_pay({"sms_bower": answers["sms_bower"]})["sms_bower"]
     if "proxy" in answers:
         proxy = answers["proxy"]
         mode = proxy.get("mode")

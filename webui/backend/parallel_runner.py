@@ -25,6 +25,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -237,7 +238,7 @@ def _spawn_worker(
     if xvfb:
         cmd += [xvfb, "-a"]
     cmd += [
-        "python", "-u", str(script),
+        sys.executable, "-u", str(script),
         "--worker-id", worker_id,
         "--phone", phone,
         *common_args,

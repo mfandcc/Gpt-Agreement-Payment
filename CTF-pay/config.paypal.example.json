@@ -61,6 +61,19 @@
     "api_url": "https://YOUR_CAPTCHA_PROVIDER",
     "api_key": "YOUR_CAPTCHA_API_KEY"
   },
+  "sms_bower": {
+    "_comment": "Codex OAuth 重登拿 RT 时若遇到 auth.openai.com/add-phone 且不能 Skip，可启用 SMSBower 自动接码。service 默认 dr（OpenAI/ChatGPT，按平台最新服务码可改），country 为 SMSBower 国家编号。",
+    "enabled": false,
+    "api_key": "YOUR_SMSBOWER_API_KEY",
+    "api_url": "https://smsbower.online/stubs/handler_api.php",
+    "service": "dr",
+    "country": "0",
+    "operator": "",
+    "max_price": "",
+    "phone_prefix": "+",
+    "timeout_s": 180,
+    "poll_interval_s": 5
+  },
   "fresh_checkout": {
     "enabled": true,
     "bootstrap_from_flows": false,

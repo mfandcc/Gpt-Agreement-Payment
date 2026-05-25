@@ -78,6 +78,7 @@ class AuthFlow:
         self._existing_page_type = ""
         self._manual_login_verifier = (os.getenv("LOGIN_VERIFIER", "") or "").strip()
         self._captured_login_verifier = ""
+        self._sms_bower_cfg = getattr(config, "sms_bower", {}) or {}
         self._oauth_client_secret = (os.getenv("OAUTH_CLIENT_SECRET", "") or "").strip()
         self._oauth_client_id = "YOUR_OPENAI_WEB_CLIENT_ID"
         self._oauth_redirect_uri = "https://chatgpt.com/api/auth/callback/openai"
@@ -911,12 +912,38 @@ class AuthFlow:
         - 需要通过环境变量提供号码与验证码来源：
           - OPENAI_PHONE_NUMBER=+1...
           - OPENAI_PHONE_OTP_CMD='...返回短信内容...' 或 OPENAI_PHONE_OTP=123456
+        - 或通过 config.sms_bower 自动从 SMSBower 采购号码并轮询短信。
         """
         phone_raw = (os.getenv("OPENAI_PHONE_NUMBER", "") or "").strip()
         phone_candidates = [x.strip() for x in phone_raw.split(",") if x.strip()]
+        sms_client = None
+        sms_activation = None
         if not phone_candidates:
-            logger.warning("命中 add-phone，但未配置 OPENAI_PHONE_NUMBER，无法继续推进")
-            return continue_url or ""
+            sms_cfg = self._sms_bower_cfg if isinstance(self._sms_bower_cfg, dict) else {}
+            sms_enabled = str(sms_cfg.get("enabled", "")).strip().lower() in ("1", "true", "yes", "on")
+            if sms_enabled and str(sms_cfg.get("api_key") or "").strip():
+                try:
+                    import sys as _sys
+                    from pathlib import Path as _Path
+                    _root = _Path(__file__).resolve().parents[2]
+                    if str(_root) not in _sys.path:
+                        _sys.path.insert(0, str(_root))
+                    from core.sms_bower import SMSBowerClient
+
+                    sms_client = SMSBowerClient.from_config(sms_cfg, log=logger.info)
+                    sms_activation = sms_client.get_number()
+                    phone_candidates = [sms_activation.display_number(str(sms_cfg.get("phone_prefix", "+")))]
+                    logger.info(
+                        "add-phone SMSBower 分配号码 id=%s tail=%s",
+                        sms_activation.activation_id,
+                        (sms_activation.number or "")[-4:],
+                    )
+                except Exception as e:
+                    logger.warning("命中 add-phone，但 SMSBower 分配号码失败: %s", e)
+                    return continue_url or ""
+            else:
+                logger.warning("命中 add-phone，但未配置 OPENAI_PHONE_NUMBER / sms_bower，无法继续推进")
+                return continue_url or ""
 
         try:
             otp_timeout = max(30, int(os.getenv("OPENAI_PHONE_OTP_TIMEOUT", "180")))
@@ -938,8 +965,20 @@ class AuthFlow:
                     )
                     continue
 
-                phone_code = self._wait_phone_otp(timeout=otp_timeout)
+                if sms_client and sms_activation:
+                    try:
+                        sms_client.set_status(sms_activation.activation_id, 1)
+                    except Exception as e:
+                        logger.warning("SMSBower setStatus(1) 失败，继续等待短信: %s", e)
+                    phone_code = sms_client.wait_code(sms_activation.activation_id)
+                else:
+                    phone_code = self._wait_phone_otp(timeout=otp_timeout)
                 validate_resp = self._phone_otp_validate(phone_code)
+                if sms_client and sms_activation:
+                    try:
+                        sms_client.set_status(sms_activation.activation_id, 6)
+                    except Exception as e:
+                        logger.warning("SMSBower setStatus(6) 失败: %s", e)
                 next_url = self._normalize_continue_url(self._extract_continue_url_from_step(validate_resp))
                 logger.info("add-phone 验证通过，next=%s", (next_url or "")[:180])
                 return next_url or continue_url or ""
@@ -951,6 +990,11 @@ class AuthFlow:
                 except Exception:
                     pass
 
+        if sms_client and sms_activation:
+            try:
+                sms_client.set_status(sms_activation.activation_id, 8)
+            except Exception as e:
+                logger.warning("SMSBower setStatus(8) 释放号码失败: %s", e)
         if last_err:
             logger.warning("add-phone 阶段未成功: %s", last_err)
         return continue_url or ""
@@ -2797,6 +2841,7 @@ def exchange_refresh_token_protocol(
     mail_cfg: dict,
     proxy_url: str = "",
     oauth_client_id: str = "",
+    sms_bower_cfg: dict | None = None,
 ) -> str:
     """纯协议 RT 重登：与 card._exchange_refresh_token_with_session 函数签名对齐。
 
@@ -2813,6 +2858,7 @@ def exchange_refresh_token_protocol(
     cfg = Config()
     cfg.mail = MailConfig(catch_all_domain=(mail_cfg or {}).get("catch_all_domain", "") or "")
     cfg.proxy = proxy_url or None
+    cfg.sms_bower = sms_bower_cfg or {}
 
     if oauth_client_id and not (os.environ.get("OAUTH_CODEX_CLIENT_ID", "") or "").strip():
         os.environ["OAUTH_CODEX_CLIENT_ID"] = oauth_client_id

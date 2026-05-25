@@ -1,6 +1,6 @@
 <template>
   <section class="step-fade-in">
-    <div class="term-divider" data-tail="──────────">步骤 14: 完成</div>
+    <div class="term-divider" data-tail="──────────">步骤 15: 完成</div>
     <h2 class="step-h">$&nbsp;Review + 导出<span class="term-cursor"></span></h2>
     <p class="step-sub">下面是即将写入的两份配置（基于你填的答案的快照）。检查无误后点"写到 repo 路径"，会先备份再覆盖。</p>
 

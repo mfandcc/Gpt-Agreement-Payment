@@ -120,6 +120,33 @@ cp CTF-reg/config.example.json              CTF-reg/config.noproxy.json
 | `rotation` | `random` / `static` / `lru`（按"最近使用"轮换） |
 | `list` | 多代理时填多条 |
 
+### `sms_bower` —— RT 重登 add-phone 接码（可选）
+
+```json
+"sms_bower": {
+  "enabled": false,
+  "api_key": "YOUR_SMSBOWER_API_KEY",
+  "api_url": "https://smsbower.online/stubs/handler_api.php",
+  "service": "dr",
+  "country": "0",
+  "operator": "",
+  "max_price": "",
+  "phone_prefix": "+",
+  "timeout_s": 180,
+  "poll_interval_s": 5
+}
+```
+
+| 字段 | 含义 |
+|---|---|
+| `enabled` | 是否在 Codex OAuth 重登遇到 `add-phone` 且不能 Skip 时启用自动接码 |
+| `api_key` | SMSBower API key |
+| `service` | SMSBower 服务码，默认 `dr`；以平台实时文档/库存为准 |
+| `country` | SMSBower 国家编号 |
+| `operator` / `max_price` | 可选的运营商和最高价格过滤 |
+| `phone_prefix` | 填进页面前给号码补的前缀，默认 `+` |
+| `timeout_s` / `poll_interval_s` | 等待短信验证码的超时和轮询间隔 |
+
 ### `paypal` / `cards` / `captcha` / `fresh_checkout` / `runtime`
 
 剩下的字段含义详见模板里的注释和 [`hcaptcha-solver.md`](hcaptcha-solver.md) / [`operating-modes.md`](operating-modes.md)。

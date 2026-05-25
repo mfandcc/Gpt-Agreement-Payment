@@ -1614,6 +1614,7 @@ def rt_only_for_email(card_config_path: str, target_email: str) -> dict:
             mail_cfg=mail_cfg,
             proxy_url=_build_proxy_url_from_cfg(card_cfg.get("proxy")),
             oauth_client_id=_codex_oauth_client_id_from_config(card_cfg),
+            sms_bower_cfg=(card_cfg.get("sms_bower") or {}),
         )
     except Exception as e:
         print(f"[rt-only] 异常: {type(e).__name__}: {str(e)[:200]}")
@@ -1835,7 +1836,7 @@ def _rt_mode_is_protocol() -> bool:
 
 def _exchange_refresh_token_dispatch(
     email: str, password: str, mail_cfg: dict,
-    proxy_url: str = "", oauth_client_id: str = "",
+    proxy_url: str = "", oauth_client_id: str = "", sms_bower_cfg: dict | None = None,
 ) -> str:
     """根据 WEBUI_REG_MODE 选 RT 交换路径。
 
@@ -1854,6 +1855,7 @@ def _exchange_refresh_token_dispatch(
         return exchange_refresh_token_protocol(
             email=email, password=password, mail_cfg=mail_cfg,
             proxy_url=proxy_url, oauth_client_id=oauth_client_id,
+            sms_bower_cfg=sms_bower_cfg or {},
         )
     if str(CARDW_DIR) not in sys.path:
         sys.path.insert(0, str(CARDW_DIR))
@@ -1863,11 +1865,12 @@ def _exchange_refresh_token_dispatch(
     return card_mod._exchange_refresh_token_with_session(
         email=email, password=password, mail_cfg=mail_cfg,
         proxy_url=proxy_url, oauth_client_id=oauth_client_id,
+        sms_bower_cfg=sms_bower_cfg or {},
     )
 
 
 def _exchange_rt_with_classification(
-    email: str, password: str, mail_cfg: dict, proxy_url: str
+    email: str, password: str, mail_cfg: dict, proxy_url: str, sms_bower_cfg: dict | None = None
 ):
     """包 _exchange_refresh_token_dispatch 加失败分类。
 
@@ -1914,6 +1917,7 @@ def _exchange_rt_with_classification(
                 password=password,
                 mail_cfg=mail_cfg,
                 proxy_url=proxy_url,
+                sms_bower_cfg=sms_bower_cfg or {},
             )
         except Exception as e:
             print(f"[free] _exchange_rt 异常: {e}")
@@ -3576,6 +3580,7 @@ def self_dealer(card_config_path, cardw_config_path=None, use_paypal=False,
             try:
                 rt = _exchange_refresh_token_dispatch(
                     email=mem_email, password=mem_pwd, mail_cfg=mail_cfg, proxy_url=proxy_url,
+                    sms_bower_cfg=(card_cfg.get("sms_bower") or {}),
                 )
             except Exception as e:
                 print(f"[self-dealer] ✗ {mem_email} 重登异常: {e}")
@@ -3800,7 +3805,9 @@ def free_register_loop(card_config_path, cardw_config_path=None, count: int = 0)
             password = reg.get("password") or _password_from_email(email)
             sid = reg.get("device_id", "") or hashlib.md5(email.encode()).hexdigest()[:16]
 
-            rt, fail = _exchange_rt_with_classification(email, password, mail_cfg, proxy_url)
+            rt, fail = _exchange_rt_with_classification(
+                email, password, mail_cfg, proxy_url, card_cfg.get("sms_bower") or {}
+            )
 
             if rt:
                 print(f"[free] [{iteration}] register {email} → succeeded rt_len={len(rt)}")
@@ -3905,7 +3912,9 @@ def free_backfill_rt_loop(card_config_path, cardw_config_path=None):
 
         print(f"\n=== [free-backfill] [{i}/{len(todo)}] {email} ===")
 
-        rt, fail = _exchange_rt_with_classification(email, password, mail_cfg, proxy_url)
+        rt, fail = _exchange_rt_with_classification(
+            email, password, mail_cfg, proxy_url, card_cfg.get("sms_bower") or {}
+        )
 
         if rt:
             print(f"[free] [{i}/{len(todo)}] backfill {email} → succeeded rt_len={len(rt)}")

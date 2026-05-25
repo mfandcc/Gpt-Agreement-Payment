@@ -93,7 +93,7 @@ flowchart LR
 
 ### 新手路径：webui 配置向导（推荐）
 
-把 1–3 小时的手动调配压到 ~15 分钟。14 步 wizard + 实时 preflight 自检 + 内置运行控制器（SSE 日志流 + 并发面板），生成 `CTF-pay/config.auto.json` + `CTF-reg/config.paypal-proxy.json` 两份配置。
+把 1–3 小时的手动调配压到 ~15 分钟。15 步 wizard + 实时 preflight 自检 + 内置运行控制器（SSE 日志流 + 并发面板），生成 `CTF-pay/config.auto.json` + `CTF-reg/config.paypal-proxy.json` 两份配置。
 
 ![webui 截图](docs/images/webui.png)
 

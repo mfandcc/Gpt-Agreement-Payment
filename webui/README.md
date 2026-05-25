@@ -18,7 +18,7 @@ python -m webui.server
 
 首次访问会跳到 `/setup` 创建管理员账号。
 
-## 14 步流程
+## 15 步流程
 
 详见 `docs/superpowers/specs/2026-04-28-webui-design.md`。
 
@@ -26,7 +26,7 @@ python -m webui.server
 |---|---|
 | 1 基础（5）| 模式选择 / 系统依赖 / Cloudflare / IMAP / 代理 |
 | 2 支付（2）| PayPal / 卡 + Billing |
-| 3 验证码（2，可选）| 打码平台 / VLM endpoint |
+| 3 验证码（3，可选）| 打码平台 / VLM endpoint / SMSBower add-phone 接码 |
 | 4 下游（4）| Team plan / gpt-team / CPA / Daemon / Stripe runtime |
 | 5 完成（1）| Review + 导出 |
 

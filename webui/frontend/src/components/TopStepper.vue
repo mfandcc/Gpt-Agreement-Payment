@@ -17,7 +17,7 @@
       </span>
     </div>
     <div class="stepper-meta">
-      阶段: {{ currentPhase }} // 第 {{ store.currentStep }}/14 步
+      阶段: {{ currentPhase }} // 第 {{ store.currentStep }}/15 步
     </div>
   </div>
 </template>
@@ -55,7 +55,8 @@ const steps = computed(() => {
     { n: 11, title: "推送", phase: "下游" },
     { n: 12, title: "DAEMON", phase: "下游" },
     { n: 13, title: "STRIPE", phase: "下游" },
-    { n: 14, title: "完成", phase: "出口" },
+    { n: 14, title: "接码", phase: "可选" },
+    { n: 15, title: "完成", phase: "出口" },
   ];
 });
 

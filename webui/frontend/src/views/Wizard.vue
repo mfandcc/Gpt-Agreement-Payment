@@ -33,9 +33,9 @@
       </button>
       <span class="foot-progress">
         <span class="fp-bar"><span class="fp-fill" :style="{ width: progressPct + '%' }"></span></span>
-        <span class="fp-text">{{ String(store.currentStep).padStart(2,'0') }} / 14</span>
+        <span class="fp-text">{{ String(store.currentStep).padStart(2,'0') }} / 15</span>
       </span>
-      <button class="foot-btn foot-btn--primary" :disabled="store.currentStep >= 14" @click="next" title="l or →">
+      <button class="foot-btn foot-btn--primary" :disabled="store.currentStep >= 15" @click="next" title="l or →">
         下一步 <span class="fb-key">[L]</span>
       </button>
     </nav>
@@ -71,9 +71,11 @@ import Step10 from "../components/steps/Step10_TeamPlan.vue";
 import Step11 from "../components/steps/Step11_Downstream.vue";
 import Step12 from "../components/steps/Step12_Daemon.vue";
 import Step13 from "../components/steps/Step13_StripeRuntime.vue";
-import Step14 from "../components/steps/Step14_Review.vue";
+import Step14 from "../components/steps/Step14_SMSBower.vue";
+import Step15 from "../components/steps/Step14_Review.vue";
 
-const STEPS = [Step01, Step02, Step03, Step04, Step05, Step06, Step07, Step08, Step09, Step10, Step11, Step12, Step13, Step14];
+const TOTAL_STEPS = 15;
+const STEPS = [Step01, Step02, Step03, Step04, Step05, Step06, Step07, Step08, Step09, Step10, Step11, Step12, Step13, Step14, Step15];
 
 const store = useWizardStore();
 const router = useRouter();
@@ -85,7 +87,7 @@ const currentStepComponent = computed(() => {
   }
   return STEPS[store.currentStep - 1];
 });
-const progressPct = computed(() => (store.currentStep / 14) * 100);
+const progressPct = computed(() => (store.currentStep / TOTAL_STEPS) * 100);
 
 const clock = ref("");
 const loaded = ref(false);
@@ -102,8 +104,8 @@ function prev() {
 }
 function next() {
   let n = store.currentStep + 1;
-  while (n <= 14 && store.isStepHidden(n)) n++;
-  if (n <= 14) { store.setStep(n); store.saveToServer(); }
+  while (n <= TOTAL_STEPS && store.isStepHidden(n)) n++;
+  if (n <= TOTAL_STEPS) { store.setStep(n); store.saveToServer(); }
 }
 async function logout() { await api.post("/logout"); router.push("/login"); }
 

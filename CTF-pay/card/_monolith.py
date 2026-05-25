@@ -5213,9 +5213,96 @@ def _codex_oauth_client_id_from_config(cfg: dict) -> str:
     )
 
 
+def _sms_bower_enabled(cfg: dict | None) -> bool:
+    if not isinstance(cfg, dict):
+        return False
+    enabled = str(cfg.get("enabled", "")).strip().lower()
+    return enabled in ("1", "true", "yes", "on") and bool(str(cfg.get("api_key") or "").strip())
+
+
+def _click_first_visible(page, selectors: list[str], log_prefix: str = "") -> bool:
+    for sel in selectors:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                el.click()
+                if log_prefix:
+                    _log(f"{log_prefix}{sel}")
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _fill_first_visible(page, selectors: list[str], value: str) -> bool:
+    for sel in selectors:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                el.click()
+                time.sleep(0.2)
+                el.fill(value)
+                return True
+        except Exception:
+            pass
+    try:
+        inputs = page.query_selector_all("input")
+        for el in inputs:
+            try:
+                if not el.is_visible():
+                    continue
+                typ = (el.get_attribute("type") or "").lower()
+                name = (el.get_attribute("name") or "").lower()
+                autocomplete = (el.get_attribute("autocomplete") or "").lower()
+                if typ in ("hidden", "email", "password", "checkbox", "radio"):
+                    continue
+                if "email" in name or "password" in name or "email" in autocomplete:
+                    continue
+                el.click()
+                time.sleep(0.2)
+                el.fill(value)
+                return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
+def _fill_otp_inputs(page, code: str) -> bool:
+    single = (
+        page.query_selector('input[autocomplete="one-time-code"]:visible')
+        or page.query_selector('input[inputmode="numeric"]:not([maxlength="1"]):visible')
+    )
+    if single:
+        single.click()
+        time.sleep(0.3)
+        single.fill(code)
+        return True
+    digits = (
+        page.query_selector_all('input[maxlength="1"][inputmode="numeric"]')
+        or page.query_selector_all('input[maxlength="1"]')
+    )
+    visible_digits = []
+    for d in digits:
+        try:
+            if d.is_visible():
+                visible_digits.append(d)
+        except Exception:
+            pass
+    if len(visible_digits) >= 4:
+        for i, ch in enumerate(code[:len(visible_digits)]):
+            visible_digits[i].click()
+            time.sleep(0.1)
+            visible_digits[i].fill(ch)
+        return True
+    return False
+
+
 def _exchange_refresh_token_with_session(email: str, password: str, mail_cfg: dict,
                                           proxy_url: str = "",
-                                          oauth_client_id: str = "") -> str:
+                                          oauth_client_id: str = "",
+                                          sms_bower_cfg: dict | None = None) -> str:
     """
     支付成功后重新登录换 refresh_token。
     流程：
@@ -5276,6 +5363,14 @@ def _exchange_refresh_token_with_session(email: str, password: str, mail_cfg: di
     has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
     tmp_profile = _tmp.mkdtemp(prefix="rt_login_")
     code_captured = {"url": ""}
+    sms_bower_cfg = sms_bower_cfg if isinstance(sms_bower_cfg, dict) else {}
+    sms_state = {
+        "client": None,
+        "activation": None,
+        "phone_submitted": False,
+        "code_submitted": False,
+        "completed": False,
+    }
 
     try:
         with Camoufox(
@@ -5375,6 +5470,125 @@ def _exchange_refresh_token_with_session(email: str, password: str, mail_cfg: di
                     _log(f"      [RT] URL: {cur[:140]}")
                     last_url = cur
                     last_log_ts = now
+                # /add-phone 页（OpenAI 风控强制塞这一步）— 先尝试 Skip，找不到再按配置接 SMSBower。
+                if "/add-phone" in cur or "phone-number" in cur or sms_state["phone_submitted"]:
+                    if not getattr(page, "_addphone_dumped", False):
+                        try:
+                            _safe_screenshot(page, "/tmp/rt_addphone.png")
+                            btns = page.evaluate("""
+                                () => Array.from(document.querySelectorAll('button,a[role=button],a,[role=button]')).map(b => ({
+                                    text: (b.innerText||'').trim().slice(0,40),
+                                    href: b.href||'',
+                                    testid: b.getAttribute('data-testid')||'',
+                                    type: b.getAttribute('type')||'',
+                                    tag: b.tagName
+                                })).filter(b => b.text || b.testid)
+                            """)
+                            _log(f"      [RT] add-phone 按钮列表: {btns}")
+                            page._addphone_dumped = True
+                        except Exception:
+                            pass
+                    skipped = False
+                    if not sms_state["phone_submitted"]:
+                        skipped = _click_first_visible(page, [
+                            'a:has-text("Skip")', 'button:has-text("Skip")',
+                            'a:has-text("Not now")', 'button:has-text("Not now")',
+                            'a:has-text("Maybe later")', 'button:has-text("Maybe later")',
+                            'a:has-text("Skip for now")', 'button:has-text("Skip for now")',
+                            '[data-testid*="skip"]',
+                            'a[href*="skip"]',
+                        ], "      [RT] add-phone 跳过: ")
+                        if skipped:
+                            time.sleep(2)
+                            continue
+                    if not skipped and not _sms_bower_enabled(sms_bower_cfg):
+                        if not getattr(page, "_addphone_gaveup", False):
+                            page._addphone_gaveup = True
+                            _log("      [RT] add-phone 无 Skip 且 sms_bower 未启用，提前放弃")
+                        break
+                    try:
+                        if not sms_state["activation"]:
+                            from core.sms_bower import SMSBowerClient
+
+                            client = SMSBowerClient.from_config(sms_bower_cfg, log=_log)
+                            activation = client.get_number()
+                            sms_state["client"] = client
+                            sms_state["activation"] = activation
+                            masked = activation.number[-4:] if activation.number else "?"
+                            _log(
+                                "      [RT-SMS] SMSBower 已分配号码 "
+                                f"id={activation.activation_id} tail={masked}"
+                            )
+                        client = sms_state["client"]
+                        activation = sms_state["activation"]
+                        if not sms_state["phone_submitted"]:
+                            phone_value = activation.display_number(str(sms_bower_cfg.get("phone_prefix", "+")))
+                            filled_phone = _fill_first_visible(page, [
+                                'input[type="tel"]:visible',
+                                'input[autocomplete="tel"]:visible',
+                                'input[name*="phone"]:visible',
+                                'input[id*="phone"]:visible',
+                                'input[data-testid*="phone"]:visible',
+                                'input[inputmode="tel"]:visible',
+                                'input[inputmode="numeric"]:not([maxlength="1"]):visible',
+                            ], phone_value)
+                            if not filled_phone:
+                                _log("      [RT-SMS] 找不到手机号输入框")
+                                break
+                            try:
+                                client.set_status(activation.activation_id, 1)
+                            except Exception as e_status:
+                                _log(f"      [RT-SMS] setStatus(1) 失败，继续: {e_status}")
+                            clicked = _click_first_visible(page, [
+                                'button[type="submit"]',
+                                'button:has-text("Continue")',
+                                'button:has-text("Next")',
+                                'button:has-text("Send code")',
+                                'button:has-text("Send Code")',
+                                'button:has-text("Verify")',
+                            ], "      [RT-SMS] 手机号提交: ")
+                            if not clicked:
+                                _log("      [RT-SMS] 未找到手机号提交按钮，尝试 Enter")
+                                try:
+                                    page.keyboard.press("Enter")
+                                except Exception:
+                                    pass
+                            sms_state["phone_submitted"] = True
+                            time.sleep(3)
+                            continue
+                        if sms_state["phone_submitted"] and not sms_state["code_submitted"]:
+                            has_code_input = (
+                                page.query_selector('input[autocomplete="one-time-code"]')
+                                or page.query_selector('input[inputmode="numeric"]')
+                                or page.query_selector('input[maxlength="1"]')
+                            )
+                            if not has_code_input:
+                                time.sleep(1)
+                                continue
+                            _log("      [RT-SMS] 等待 SMSBower 验证码 ...")
+                            sms_code = client.wait_code(activation.activation_id)
+                            _log(f"      [RT-SMS] 验证码已获取 (len={len(sms_code)})")
+                            if not _fill_otp_inputs(page, sms_code):
+                                _log("      [RT-SMS] 找不到验证码输入框")
+                                break
+                            _click_first_visible(page, [
+                                'button[type="submit"]',
+                                'button:has-text("Continue")',
+                                'button:has-text("Verify")',
+                                'button:has-text("Next")',
+                                'button:has-text("Submit")',
+                            ], "      [RT-SMS] 验证码提交: ")
+                            sms_state["code_submitted"] = True
+                            sms_state["completed"] = True
+                            try:
+                                client.set_status(activation.activation_id, 6)
+                            except Exception as e_status:
+                                _log(f"      [RT-SMS] setStatus(6) 失败，继续: {e_status}")
+                            time.sleep(4)
+                            continue
+                    except Exception as e_sms:
+                        _log(f"      [RT-SMS] add-phone 自动接码失败: {e_sms}")
+                        break
                 # OTP 页
                 if ("/email-otp" in cur or "passwordless" in cur or
                     page.query_selector('input[autocomplete="one-time-code"]') or
@@ -5425,49 +5639,6 @@ def _exchange_refresh_token_with_session(email: str, password: str, mail_cfg: di
                             except Exception:
                                 pass
                             break
-                # /add-phone 页（OpenAI 风控强制塞这一步）— 找 Skip 按钮跳过
-                if "/add-phone" in cur or "phone-number" in cur:
-                    if not getattr(page, "_addphone_dumped", False):
-                        try:
-                            _safe_screenshot(page, "/tmp/rt_addphone.png")
-                            btns = page.evaluate("""
-                                () => Array.from(document.querySelectorAll('button,a[role=button],a,[role=button]')).map(b => ({
-                                    text: (b.innerText||'').trim().slice(0,40),
-                                    href: b.href||'',
-                                    testid: b.getAttribute('data-testid')||'',
-                                    type: b.getAttribute('type')||'',
-                                    tag: b.tagName
-                                })).filter(b => b.text || b.testid)
-                            """)
-                            _log(f"      [RT] add-phone 按钮列表: {btns}")
-                            page._addphone_dumped = True
-                        except Exception:
-                            pass
-                    skipped = False
-                    for sel in [
-                        'a:has-text("Skip")', 'button:has-text("Skip")',
-                        'a:has-text("Not now")', 'button:has-text("Not now")',
-                        'a:has-text("Maybe later")', 'button:has-text("Maybe later")',
-                        'a:has-text("Skip for now")', 'button:has-text("Skip for now")',
-                        '[data-testid*="skip"]',
-                        'a[href*="skip"]',
-                    ]:
-                        try:
-                            b = page.query_selector(sel)
-                            if b and b.is_visible():
-                                b.click()
-                                _log(f"      [RT] add-phone 跳过: {sel}")
-                                skipped = True
-                                time.sleep(2)
-                                break
-                        except Exception:
-                            pass
-                    # 找不到 Skip：OpenAI 强制要求 phone 验证，本次 OAuth 必失败。
-                    # 提前 break 避免 240s 空等（caller 通过 callback 没拿到 code 判失败）。
-                    if not skipped and not getattr(page, "_addphone_gaveup", False):
-                        page._addphone_gaveup = True
-                        _log("      [RT] add-phone 找不到 Skip 按钮，提前放弃避免 240s 空等")
-                        break
                 # Codex consent 授权页 — 自动点 Authorize
                 if "/consent" in cur or "/authorize" in cur:
                     if not getattr(page, "_consent_dumped", False):
@@ -5531,6 +5702,14 @@ def _exchange_refresh_token_with_session(email: str, password: str, mail_cfg: di
             except Exception:
                 pass
     finally:
+        try:
+            client = sms_state.get("client")
+            activation = sms_state.get("activation")
+            if client and activation and not sms_state.get("completed"):
+                client.set_status(activation.activation_id, 8)
+                _log(f"      [RT-SMS] 已释放未完成号码 id={activation.activation_id}")
+        except Exception as e_cancel:
+            _log(f"      [RT-SMS] 释放号码失败: {e_cancel}")
         try:
             _sh.rmtree(tmp_profile, ignore_errors=True)
         except Exception:
@@ -9429,6 +9608,7 @@ def run(
 	                    mail_cfg=_mail_cfg,
 	                    proxy_url=_build_proxy_url_from_cfg(cfg.get("proxy")) if isinstance(cfg, dict) else "",
 	                    oauth_client_id=_codex_oauth_client_id_from_config(cfg),
+	                    sms_bower_cfg=cfg.get("sms_bower") if isinstance(cfg, dict) else {},
 	                )
                 if rt_value:
                     extra_info["refresh_token"] = rt_value

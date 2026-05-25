@@ -107,6 +107,48 @@ def test_export_writes_gopay_auto_otp(client, tmp_path, monkeypatch):
     assert pay["gopay"]["otp"]["interval"] == 1
 
 
+def test_export_writes_sms_bower_config(client, tmp_path, monkeypatch):
+    _login(client)
+    _seed(tmp_path, monkeypatch)
+
+    answers = {
+        "sms_bower": {
+            "enabled": True,
+            "api_key": "sb-key",
+            "api_url": "https://smsbower.online/stubs/handler_api.php",
+            "service": "dr",
+            "country": "187",
+            "operator": "any",
+            "max_price": "0.5",
+            "phone_prefix": "+",
+            "timeout_s": 240,
+            "poll_interval_s": 4,
+        },
+    }
+    r = client.post("/api/config/export", json={"answers": answers})
+    assert r.status_code == 200
+
+    pay = json.loads((tmp_path / "CTF-pay" / "config.paypal.json").read_text())
+    assert pay["sms_bower"]["enabled"] is True
+    assert pay["sms_bower"]["api_key"] == "sb-key"
+    assert pay["sms_bower"]["service"] == "dr"
+    assert pay["sms_bower"]["country"] == "187"
+    assert pay["sms_bower"]["timeout_s"] == 240
+    reg = json.loads((tmp_path / "CTF-reg" / "config.paypal-proxy.json").read_text())
+    assert reg["sms_bower"]["enabled"] is True
+    assert reg["sms_bower"]["api_key"] == "sb-key"
+    assert reg["sms_bower"]["service"] == "dr"
+    assert reg["sms_bower"]["country"] == "187"
+
+    spec = importlib.util.spec_from_file_location("ctf_reg_config_sms_bower_test", Path("CTF-reg/config.py"))
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    cfg = module.Config.from_file(str(tmp_path / "CTF-reg" / "config.paypal-proxy.json"))
+    assert cfg.sms_bower["enabled"] is True
+    assert cfg.sms_bower["api_key"] == "sb-key"
+
+
 def test_export_writes_hosted_checkout_link_mode(client, tmp_path, monkeypatch):
     _login(client)
     _seed(tmp_path, monkeypatch)

@@ -1029,6 +1029,32 @@ class AuthFlow:
 
         return callback_url, final_url
 
+    def _codex_handle_add_phone_then_follow(
+        self,
+        continue_url: str,
+        redirect_uri: str,
+        trace_prefix: str,
+    ) -> tuple[str, str]:
+        """
+        Codex OAuth 授权链命中 add-phone 时，复用纯协议手机验证流程，
+        验证通过后继续跟随后续 OAuth callback。
+        """
+        if not self._is_add_phone_state(page_type="", continue_url=continue_url):
+            return "", continue_url or ""
+
+        logger.info("Codex OAuth 命中 add-phone，尝试自动接码推进...")
+        next_url = self._normalize_continue_url(
+            self._handle_add_phone_verification(continue_url=continue_url)
+        )
+        if not next_url or next_url == continue_url:
+            return "", continue_url or ""
+
+        return self._follow_authorize_for_callback(
+            next_url,
+            redirect_uri,
+            trace_prefix,
+        )
+
     def oauth_codex_rt_exchange(self, mail_provider: Optional[MailProvider] = None) -> bool:
         """
         纯协议方式获取 RT（参考 any-auto-register）：
@@ -1055,6 +1081,13 @@ class AuthFlow:
                 auth_url, redirect_uri, "codex_authorize"
             )
 
+            if (not callback_url) and self._is_add_phone_state(page_type="", continue_url=final_url or ""):
+                callback_url, final_url = self._codex_handle_add_phone_then_follow(
+                    final_url or "",
+                    redirect_uri,
+                    "codex_authorize_post_add_phone",
+                )
+
             # 若被打回 /log-in，补走一次协议登录，再继续授权链路
             if (not callback_url) and "/log-in" in (final_url or ""):
                 logger.info("Codex 授权回落到 /log-in，尝试协议推进登录状态...")
@@ -1064,8 +1097,16 @@ class AuthFlow:
                 except Exception as e:
                     logger.warning(f"Codex 登录推进失败，改走 no-prompt 兜底: {e}")
                 if continue_url:
-                    # 命中 add-phone 时，支持“刷新重试”策略（不立刻放弃）
                     if self._is_add_phone_state(page_type="", continue_url=continue_url) and self._env_flag(
+                        "OAUTH_CODEX_ADD_PHONE_AUTO_VERIFY", "1"
+                    ):
+                        callback_url, final_url = self._codex_handle_add_phone_then_follow(
+                            continue_url,
+                            redirect_uri,
+                            "codex_post_login_add_phone",
+                        )
+                    # 命中 add-phone 时，支持“刷新重试”策略（不立刻放弃）
+                    elif self._is_add_phone_state(page_type="", continue_url=continue_url) and self._env_flag(
                         "OAUTH_CODEX_ADD_PHONE_REFRESH_RETRY", "1"
                     ):
                         try:
@@ -1099,6 +1140,12 @@ class AuthFlow:
                         redirect_uri,
                         "codex_authorize_noprompt",
                     )
+                    if (not callback_url) and self._is_add_phone_state(page_type="", continue_url=final_url or ""):
+                        callback_url, final_url = self._codex_handle_add_phone_then_follow(
+                            final_url or "",
+                            redirect_uri,
+                            "codex_authorize_noprompt_post_add_phone",
+                        )
 
             if not callback_url:
                 logger.warning("Codex OAuth 未捕获 callback code, final=%s", (final_url or "")[:180])
